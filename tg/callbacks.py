@@ -17,6 +17,11 @@ ORD_BACK          = "oback"
 SIG_CONFIRM      = "sig_confirm"
 SIG_CANCEL       = "sig_cancel"
 SIG_CHANGE_PRICE = "sig_chprice"
+SIG_EDIT         = "sig_edit"
 
 # change price on any order confirmation
 CHANGE_PRICE = "change_price"
+
+# login flow
+LOGIN_LIVE  = "login_live"
+LOGIN_PAPER = "login_paper"

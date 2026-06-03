@@ -1,19 +1,40 @@
-# Environment & secrets
+# ── Secrets & credentials ────────────────────────────────────────────
 .env
+.env.*
+!.env.example
+# Telethon login session (treat as a credential)
 *.session
+*.session-journal
+# Google Cloud service-account keys
+service-account*.json
+*-credentials.json
 
-# Python cache
+# ── Python ───────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
 
-# Test scripts
+# ── Test scripts ─────────────────────────────────────────────────────
 test_*.py
 
-# Claude settings
-.claude/
+# ── Downloaded signal images + metadata (may contain account data) ───
+signal_examples/
 
-# OS
+# ── Stray temp / debug dumps ─────────────────────────────────────────
+*.b64
+gateway_*.png
+gateway_*.b64
+CUsers*
+C:Users*
+
+# ── Editor / tooling ─────────────────────────────────────────────────
+.claude/
+.vscode/
+.idea/
+
+# ── OS ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

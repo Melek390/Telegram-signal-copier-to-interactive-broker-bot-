@@ -1,6 +1,13 @@
 import functools
+import http.server
+import os
+import re
+import secrets
 import subprocess
 import asyncio
+import threading
+import time
+import urllib.parse
 from datetime import datetime
 
 from telegram import Update
@@ -12,6 +19,7 @@ from .keyboards import (
     option_type_keyboard, confirm_keyboard, confirm_change_keyboard,
     positions_keyboard, order_list_keyboard, order_action_keyboard,
     signal_confirm_keyboard, signal_confirm_change_keyboard,
+    login_mode_keyboard,
 )
 from ibkr.client import (
     place_order as ibkr_place_order,
@@ -30,6 +38,8 @@ TICKER, OPTION_TYPE, STRIKE, DATE, PRICE, QTY, CONFIRM = range(7)
 POS_CLOSE_INPUT, POS_CLOSE_CONFIRM = range(10, 12)
 # Orders states
 ORD_ACTION, ORD_NEW_PRICE, ORD_MODIFY_CONFIRM = range(20, 23)
+# Login states
+LOGIN_MODE, LOGIN_ID, LOGIN_PASSWORD = range(30, 33)
 
 _authorized_ids: set[int] = set()
 
@@ -60,7 +70,7 @@ def _parse_mmdd(date_str: str) -> str | None:
     try:
         dd, mm = int(date_str[:2]), int(date_str[2:])
         expiry = datetime(today.year, mm, dd).date()
-        if expiry <= today:
+        if expiry < today:
             expiry = datetime(today.year + 1, mm, dd).date()
         return expiry.strftime("%Y-%m-%d")
     except ValueError:
@@ -426,8 +436,9 @@ def _watchdog_running() -> bool:
     return r.returncode == 0
 
 def _gateway_up() -> bool:
+    port = os.getenv("IBKR_PORT", "4002")
     r = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True)
-    return ":4002" in r.stdout
+    return f":{port}" in r.stdout
 
 def _start_watchdog():
     if not _watchdog_running():
@@ -435,6 +446,49 @@ def _start_watchdog():
             ["tmux", "new-session", "-d", "-s", "gatewaywatchdog", "/root/restart_gateway.sh"],
             capture_output=True,
         )
+
+
+def _update_ibc_config(ibkr_id: str, password: str, mode: str) -> None:
+    """Update IBC config.ini with new credentials and trading mode."""
+    config_path = "/root/IBC/config.ini"
+    with open(config_path, "r") as f:
+        content = f.read()
+    content = re.sub(r"^IbLoginId=.*$",  f"IbLoginId={ibkr_id}",  content, flags=re.MULTILINE)
+    content = re.sub(r"^IbPassword=.*$", f"IbPassword={password}", content, flags=re.MULTILINE)
+    content = re.sub(r"^TradingMode=.*$",f"TradingMode={mode}",    content, flags=re.MULTILINE)
+    with open(config_path, "w") as f:
+        f.write(content)
+
+
+def _update_watchdog_script(port: str, mode: str) -> None:
+    """Update restart_gateway.sh with the new port and trading mode."""
+    script_path = "/root/restart_gateway.sh"
+    with open(script_path, "r") as f:
+        content = f.read()
+    content = re.sub(r"grep -q :\d{4}",  f"grep -q :{port}", content)
+    content = re.sub(r"Port \d{4} down",  f"Port {port} down", content)
+    content = re.sub(r"--mode=\w+",       f"--mode={mode}",   content)
+    with open(script_path, "w") as f:
+        f.write(content)
+
+
+def _update_env_port(port: str) -> None:
+    """Update IBKR_PORT in .env and in the running process environment."""
+    env_path = "/root/bot/.env"
+    with open(env_path, "r") as f:
+        lines = f.readlines()
+    new_lines, found = [], False
+    for line in lines:
+        if line.startswith("IBKR_PORT="):
+            new_lines.append(f"IBKR_PORT={port}\n")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"IBKR_PORT={port}\n")
+    with open(env_path, "w") as f:
+        f.writelines(new_lines)
+    os.environ["IBKR_PORT"] = port
 
 
 async def _ensure_gateway(notify) -> bool:
@@ -456,11 +510,221 @@ async def _ensure_gateway(notify) -> bool:
     return False
 
 
+# ── Login (web-based credential input) ────────────────────────────────────────
+
+_LOGIN_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>IBKR Bot Login</title>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{font-family:sans-serif;background:#1a1a2e;display:flex;align-items:center;justify-content:center;min-height:100vh}}
+    .card{{background:#16213e;border-radius:12px;padding:32px;width:100%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,.4)}}
+    h2{{color:#e94560;margin-bottom:8px;font-size:1.3rem}}
+    p{{color:#a8a8b3;font-size:.85rem;margin-bottom:24px;line-height:1.5}}
+    label{{color:#c8c8d4;font-size:.8rem;display:block;margin-bottom:4px}}
+    input{{width:100%;padding:10px 12px;background:#0f3460;border:1px solid #2a2a4a;border-radius:6px;color:#fff;font-size:.95rem;margin-bottom:16px;outline:none}}
+    input:focus{{border-color:#e94560}}
+    button{{width:100%;padding:12px;background:#e94560;color:#fff;border:none;border-radius:6px;font-size:1rem;cursor:pointer;font-weight:600}}
+    button:hover{{background:#c73652}}
+    .mode{{color:#4cc9f0;font-weight:600;margin-bottom:20px;font-size:.9rem}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🔐 IBKR Bot Login</h2>
+    <p>Credentials sent directly to the server — never through Telegram.</p>
+    <div class="mode">Mode: {label}</div>
+    <form method="POST">
+      <input type="hidden" name="token" value="{token}">
+      <label>IBKR Username</label>
+      <input type="text" name="username" placeholder="Username" required autofocus autocomplete="username">
+      <label>IBKR Password</label>
+      <input type="password" name="password" placeholder="Password" required autocomplete="current-password">
+      <button type="submit">Connect →</button>
+    </form>
+  </div>
+</body>
+</html>"""
+
+_SUCCESS_HTML = """<!DOCTYPE html>
+<html>
+<head><title>Connected</title>
+<style>body{{font-family:sans-serif;background:#1a1a2e;color:#4cc9f0;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center}}</style>
+</head>
+<body><div><h2>✅ Credentials received</h2><p style="color:#a8a8b3;margin-top:12px">Return to Telegram — the gateway is starting.</p></div></body>
+</html>"""
+
+
+async def _do_login(ibkr_id: str, password: str, mode: str, application, chat_id: int) -> None:
+    """Runs on PTB's event loop — updates config, restarts gateway, shows result."""
+    port  = "4001" if mode == "live" else "4002"
+    label = "Live Trading" if mode == "live" else "Paper Trading"
+
+    status = await application.bot.send_message(
+        chat_id, f"Switching to *{label}*…", parse_mode="Markdown"
+    )
+    _update_ibc_config(ibkr_id, password, mode)
+    _update_watchdog_script(port, mode)
+    _update_env_port(port)
+
+    subprocess.run(["tmux", "kill-session", "-t", "gatewaywatchdog"], capture_output=True)
+    subprocess.run(["pkill", "-f", "ibgateway"], capture_output=True)
+    await asyncio.sleep(3)
+    _start_watchdog()
+    await status.edit_text(f"Starting *{label}* gateway…", parse_mode="Markdown")
+
+    for _ in range(24):
+        await asyncio.sleep(5)
+        if _gateway_up():
+            await asyncio.sleep(15)
+            break
+
+    if not _gateway_up():
+        await status.edit_text(
+            "*Gateway did not start.*\n\nCheck credentials and try again.",
+            parse_mode="Markdown",
+        )
+        return
+
+    summary = await ibkr_get_account_summary()
+    if summary["success"]:
+        await status.edit_text(msg.wake_up_ok(summary), parse_mode="Markdown")
+    else:
+        await status.edit_text(
+            f"*{label} gateway is up* ✓\n\nCould not fetch account details — try `details`.",
+            parse_mode="Markdown",
+        )
+
+
+def _start_login_server(token: str, port: int, mode: str,
+                        application, ptb_loop, chat_id: int) -> None:
+    """Start a temporary HTTP server that accepts credentials once, then shuts down."""
+    label = "Live Trading" if mode == "live" else "Paper Trading"
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        _done = False
+
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            if params.get("token", [None])[0] != token or Handler._done:
+                self.send_response(403); self.end_headers(); return
+            page = _LOGIN_HTML.format(token=token, label=label)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(page.encode())
+
+        def do_POST(self):
+            if Handler._done:
+                self.send_response(403); self.end_headers(); return
+            length   = int(self.headers.get("Content-Length", 0))
+            body     = self.rfile.read(length).decode()
+            params   = urllib.parse.parse_qs(body)
+            ibkr_id  = params.get("username", [""])[0].strip()
+            password = params.get("password", [""])[0].strip()
+            tkn      = params.get("token",    [""])[0]
+            if not ibkr_id or not password or tkn != token:
+                self.send_response(400); self.end_headers(); return
+            Handler._done = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(_SUCCESS_HTML.encode())
+            asyncio.run_coroutine_threadsafe(
+                _do_login(ibkr_id, password, mode, application, chat_id),
+                ptb_loop,
+            )
+
+    server = http.server.HTTPServer(("0.0.0.0", port), Handler)
+
+    def _serve():
+        server.timeout = 1
+        deadline = time.time() + 120
+        while not Handler._done and time.time() < deadline:
+            server.handle_request()
+        server.server_close()
+
+    threading.Thread(target=_serve, daemon=True, name=f"login-{port}").start()
+
+
+@authorized
+async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "*IBKR Login*\n\nSelect trading mode:",
+        reply_markup=login_mode_keyboard(),
+        parse_mode="Markdown",
+    )
+    return LOGIN_MODE
+
+
+@authorized
+async def login_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    mode  = "live" if query.data == cb.LOGIN_LIVE else "paper"
+    label = "Live Trading" if mode == "live" else "Paper Trading"
+
+    token = secrets.token_urlsafe(12)
+    port  = int(os.getenv("LOGIN_PORT", "7823"))
+    vps_ip = os.getenv("VPS_IP", "127.0.0.1")
+
+    ptb_loop = asyncio.get_event_loop()
+    _start_login_server(token, port, mode, context.application, ptb_loop, query.message.chat_id)
+
+    await query.edit_message_text(
+        f"*{label}* selected.\n\n"
+        f"🔐 Open this link in your browser to enter credentials:\n"
+        f"`http://{vps_ip}:{port}?token={token}`\n\n"
+        f"_Link expires in 2 minutes. Credentials go directly to the server — not through Telegram._",
+        parse_mode="Markdown",
+    )
+    return ConversationHandler.END
+
+
+@authorized
+async def wake_up_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _ensure_gateway(update.message.reply_text):
+        return
+    summary = await ibkr_get_account_summary()
+    if summary["success"]:
+        await update.message.reply_text(msg.wake_up_ok(summary), parse_mode="Markdown")
+    else:
+        await update.message.reply_text("Gateway is up but could not fetch account details.")
+
+
 @authorized
 async def sleep_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     subprocess.run(["tmux", "kill-session", "-t", "gatewaywatchdog"], capture_output=True)
     subprocess.run(["pkill", "-f", "ibgateway"], capture_output=True)
     await update.message.reply_text(msg.SLEEPING, parse_mode="Markdown")
+
+
+@authorized
+async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Graceful IBKR logout — sends SIGTERM so Gateway closes the session cleanly."""
+    subprocess.run(["tmux", "kill-session", "-t", "gatewaywatchdog"], capture_output=True)
+    await update.message.reply_text("Logging out from IBKR…")
+
+    # SIGTERM allows Gateway to log out properly before exiting
+    subprocess.run(["pkill", "-SIGTERM", "-f", "ibgateway"], capture_output=True)
+
+    # Wait up to 15s for clean shutdown
+    for _ in range(5):
+        await asyncio.sleep(3)
+        r = subprocess.run(["pgrep", "-f", "ibgateway"], capture_output=True)
+        if r.returncode != 0:
+            break
+
+    # Force kill if still hanging
+    subprocess.run(["pkill", "-9", "-f", "ibgateway"], capture_output=True)
+
+    await update.message.reply_text(msg.LOGGED_OUT, parse_mode="Markdown")
 
 
 @authorized
@@ -490,18 +754,142 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 # ── Signal confirmation handlers ───────────────────────────────────────────────
 
+_SIG_FIELD_PROMPTS = {
+    "ticker":      "Enter *ticker* (e.g. `SPX`, `TSLA`):",
+    "option_type": "Enter *option type* — `call` or `put`:",
+    "strike":      "Enter *strike price* (e.g. `500`):",
+    "expiry":      "Enter *expiry date* (DDMM — e.g. `0506` for May 6):",
+}
+
+
 @authorized
 async def sig_price_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Catches text input when user is asked to supply a price for a detected signal.
+    Catches text input when user is asked to supply missing signal fields or a price.
     Registered last in group 0 — only runs when no ConversationHandler claimed the update.
-    Silently no-ops if there is no pending signal awaiting a price.
+    Silently no-ops if there is no pending signal awaiting input.
     """
     sig = context.user_data.get("pending_signal")
-    if not sig or sig.get("state") != "awaiting_price":
+    if not sig:
         return
 
-    result = _parse_price(update.message.text.strip())
+    state = sig.get("state")
+    text  = update.message.text.strip()
+
+    # ── Fill in missing critical fields one at a time ──────────────────────────
+    if state == "awaiting_fields":
+        missing = sig.get("missing_fields", [])
+        if not missing:
+            sig["state"] = "awaiting_price"
+            context.user_data["pending_signal"] = sig
+            await update.message.reply_text(msg.signal_missing_price(sig), parse_mode="Markdown")
+            return
+
+        field = missing[0]
+
+        if field == "ticker":
+            val = text.upper()
+            if not val.isalpha() or not (1 <= len(val) <= 6):
+                await update.message.reply_text("Enter a valid ticker — letters only, e.g. `SPX`.", parse_mode="Markdown")
+                return
+            sig["ticker"] = val
+
+        elif field == "option_type":
+            lower = text.lower()
+            if lower in ("call", "c"):
+                sig["option_type"] = "Call"
+            elif lower in ("put", "p"):
+                sig["option_type"] = "Put"
+            else:
+                await update.message.reply_text("Enter `call` or `put`.", parse_mode="Markdown")
+                return
+
+        elif field == "strike":
+            try:
+                val = float(text)
+                if val <= 0:
+                    raise ValueError
+                sig["strike"] = val
+            except ValueError:
+                await update.message.reply_text("Enter a positive number — e.g. `500`.", parse_mode="Markdown")
+                return
+
+        elif field == "expiry":
+            expiry = _parse_mmdd(text)
+            if not expiry:
+                await update.message.reply_text("Use DDMM format — e.g. `0506` for May 6.", parse_mode="Markdown")
+                return
+            sig["expiry"] = expiry
+
+        missing.pop(0)
+        sig["missing_fields"] = missing
+        context.user_data["pending_signal"] = sig
+
+        if missing:
+            await update.message.reply_text(_SIG_FIELD_PROMPTS[missing[0]], parse_mode="Markdown")
+        else:
+            # All critical fields filled — ask for price+qty and place directly
+            sig["state"] = "awaiting_edit"
+            context.user_data["pending_signal"] = sig
+            await update.message.reply_text(
+                "All fields complete. Enter price and quantity:\n"
+                "• `3.50 10` — limit at $3.50, qty 10\n"
+                "• `mkt 5` — market, qty 5",
+                parse_mode="Markdown",
+            )
+        return
+
+    # ── Edit order (price + qty) → place directly ────────────────────────────
+    if state == "awaiting_edit":
+        parts = text.split()
+        if len(parts) != 2:
+            await update.message.reply_text(
+                "Enter price and quantity:\n• `3.50 10` — limit at $3.50, qty 10\n• `mkt 5` — market, qty 5",
+                parse_mode="Markdown",
+            )
+            return
+        price_result = _parse_price(parts[0])
+        if price_result is None:
+            await update.message.reply_text(
+                "Invalid price. Use a number (e.g. `3.50`) or `mkt`.",
+                parse_mode="Markdown",
+            )
+            return
+        try:
+            qty = int(parts[1])
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text("Invalid quantity. Enter a positive integer.", parse_mode="Markdown")
+            return
+
+        order_type, limit_price = price_result
+        sig["order_type"]  = order_type
+        sig["limit_price"] = limit_price
+        sig["size"]        = qty
+
+        if not await _ensure_gateway(update.message.reply_text):
+            return
+        await update.message.reply_text("Placing order with IBKR...")
+
+        order_data = dict(sig)
+        for k in ("state", "entry_price", "missing_fields"):
+            order_data.pop(k, None)
+
+        result = await ibkr_place_order(order_data)
+        context.user_data.pop("pending_signal", None)
+
+        if result["success"]:
+            await update.message.reply_text(msg.order_placed(order_data, result), parse_mode="Markdown")
+        else:
+            await update.message.reply_text(msg.order_failed(result["error"]), parse_mode="Markdown")
+        return
+
+    # ── Price input ────────────────────────────────────────────────────────────
+    if state != "awaiting_price":
+        return
+
+    result = _parse_price(text)
     if result is None:
         await update.message.reply_text(
             "Enter a price — e.g. `1.50` — or `mkt` for market order.",
@@ -534,43 +922,23 @@ async def sig_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("No pending signal order.")
         return
 
-    if query.data == cb.SIG_CHANGE_PRICE:
-        sig["state"] = "awaiting_price"
-        context.user_data["pending_signal"] = sig
-        await query.edit_message_text(
-            "Enter new price — e.g. `1.50` — or `mkt` for market order.",
-            parse_mode="Markdown",
-        )
-        return
-
     if query.data == cb.SIG_CANCEL:
         context.user_data.pop("pending_signal", None)
         await query.edit_message_text("Signal cancelled.")
         return
 
-    # Confirm — ensure gateway then place order
-    if not await _ensure_gateway(query.edit_message_text):
-        return
-
-    await query.edit_message_text("Placing order with IBKR...")
-
-    order_data = dict(sig)
-    order_data.pop("state", None)
-    order_data.pop("entry_price", None)
-
-    result = await ibkr_place_order(order_data)
-    context.user_data.pop("pending_signal", None)
-
-    if result["success"]:
-        await query.edit_message_text(
-            msg.order_placed(order_data, result),
-            parse_mode="Markdown",
-        )
-    else:
-        await query.edit_message_text(
-            msg.order_failed(result["error"]),
-            parse_mode="Markdown",
-        )
+    # Confirm — ask for price+qty, then place directly (no second confirm screen)
+    sig["state"] = "awaiting_edit"
+    context.user_data["pending_signal"] = sig
+    price_hint = f"${sig['limit_price']}" if sig.get("limit_price") else "mkt"
+    qty_hint   = sig.get("size", 1)
+    await query.edit_message_text(
+        f"Enter price and quantity:\n"
+        f"• `3.50 10` — limit at $3.50, qty 10\n"
+        f"• `mkt 5` — market, qty 5\n\n"
+        f"Scraped: `{price_hint} {qty_hint}`",
+        parse_mode="Markdown",
+    )
 
 
 # ── Open Positions ─────────────────────────────────────────────────────────────

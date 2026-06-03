@@ -22,6 +22,12 @@ SLEEPING = (
     "Type `wake up` when you want to trade again."
 )
 
+LOGGED_OUT = (
+    "*Logged out from IBKR* ✓\n\n"
+    "Session closed cleanly.\n"
+    "Type `login` to reconnect when you're ready to trade."
+)
+
 WAKE_UP_TIMEOUT = (
     "*Gateway did not respond in time*\n\n"
     "The watchdog is still running and will keep retrying.\n"
@@ -219,6 +225,32 @@ def order_failed(error: str) -> str:
         f"`{error}`\n\n"
         f"Type *buy* or *sell* to try again."
     )
+
+
+def signal_partial(direction: str, order: dict, missing: list) -> str:
+    """Shown when OCR could not read some critical fields. Shows what was parsed, asks for first missing."""
+    label = "BUY" if direction == "BUY" else "SELL"
+    _opt = {"C": "Call", "P": "Put"}
+    lines = [f"*Signal detected: {label}*\n", "*Partial read — some fields missing:*\n"]
+    field_display = {
+        "ticker":      ("Ticker ", order.get("ticker")),
+        "option_type": ("Type   ", _opt.get(order.get("option_type", ""), order.get("option_type"))),
+        "strike":      ("Strike ", str(int(order["strike"])) if order.get("strike") and order["strike"] == int(order["strike"]) else str(order.get("strike")) if order.get("strike") else None),
+        "expiry":      ("Expiry ", order.get("expiry")),
+    }
+    for field, (label_str, val) in field_display.items():
+        if field in missing:
+            lines.append(f"{label_str}:  _missing_")
+        elif val:
+            lines.append(f"{label_str}:  *{val}*")
+    prompts = {
+        "ticker":      "Enter *ticker* (e.g. `SPX`, `TSLA`):",
+        "option_type": "Enter *option type* — `call` or `put`:",
+        "strike":      "Enter *strike price* (e.g. `500`):",
+        "expiry":      "Enter *expiry date* (DDMM — e.g. `0506` for May 6):",
+    }
+    lines.append("\n" + prompts.get(missing[0], f"Enter {missing[0]}:"))
+    return "\n".join(lines)
 
 
 def signal_header(direction: str) -> str:

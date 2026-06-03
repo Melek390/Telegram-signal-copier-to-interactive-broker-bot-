@@ -21,12 +21,14 @@ from tg.handlers import (
     handle_entry, ticker_input, option_type_callback, strike_input,
     date_input, price_input, qty_input, confirm_callback,
     cancel_command, help_command, set_authorized_users,
-    sleep_command, details_command,
+    sleep_command, logout_command, details_command, wake_up_command,
     POS_CLOSE_INPUT, POS_CLOSE_CONFIRM,
     positions_command, pos_close_select, pos_close_input, pos_close_confirm,
     ORD_ACTION, ORD_NEW_PRICE, ORD_MODIFY_CONFIRM,
     orders_command, ord_select, ord_action, ord_new_price, ord_modify_confirm,
     sig_price_input, sig_confirm_callback,
+    LOGIN_MODE,
+    login_command, login_mode_callback,
 )
 from tg.signal_listener import start_signal_listener
 
@@ -50,7 +52,7 @@ def main():
 
     async def post_init(application: Application) -> None:
         if os.getenv("TELEGRAM_API_ID") and os.getenv("API_HASH"):
-            asyncio.create_task(start_signal_listener(application, user_ids))
+            start_signal_listener(application, user_ids)  # starts daemon thread, not a task
         else:
             logger.warning("TELEGRAM_API_ID / API_HASH not set — signal listener disabled.")
 
@@ -102,14 +104,27 @@ def main():
         per_message=False,
     )
 
+    login_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r"(?i)^login$"), login_command)],
+        states={
+            LOGIN_MODE: [CallbackQueryHandler(login_mode_callback, pattern=f"^({cb.LOGIN_LIVE}|{cb.LOGIN_PAPER})$")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_command)],
+        allow_reentry=True,
+        per_message=False,
+    )
+
     app.add_handler(conv)
     app.add_handler(pos_conv)
     app.add_handler(ord_conv)
+    app.add_handler(login_conv)
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.Regex(r"(?i)^wake\s+up$"), wake_up_command))
     app.add_handler(MessageHandler(filters.Regex(r"(?i)^details$"), details_command))
     app.add_handler(MessageHandler(filters.Regex(r"(?i)^sleep$"), sleep_command))
+    app.add_handler(MessageHandler(filters.Regex(r"(?i)^logout$"), logout_command))
     # Signal confirmation — uses sig_confirm/sig_cancel (no collision with existing flows)
-    app.add_handler(CallbackQueryHandler(sig_confirm_callback, pattern=f"^({cb.SIG_CONFIRM}|{cb.SIG_CANCEL}|{cb.SIG_CHANGE_PRICE})$"))
+    app.add_handler(CallbackQueryHandler(sig_confirm_callback, pattern=f"^({cb.SIG_CONFIRM}|{cb.SIG_CANCEL})$"))
     # Signal price input — last in group 0; only runs when user is not in any ConversationHandler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, sig_price_input))
     logger.info("Bot is running...")

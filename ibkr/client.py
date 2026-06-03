@@ -7,20 +7,25 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env
 
 from ib_insync import IB, Option, MarketOrder, LimitOrder
 
-IBKR_HOST      = os.getenv("IBKR_HOST", "127.0.0.1")
-IBKR_PORT      = int(os.getenv("IBKR_PORT", "7497"))   # 7497 = TWS paper | 4002 = Gateway paper
-IBKR_CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "1"))
-
 _RIGHT = {"CALL": "C", "PUT": "P"}
+
+
+def _host() -> str:
+    return os.getenv("IBKR_HOST", "127.0.0.1")
+
+def _port() -> int:
+    return int(os.getenv("IBKR_PORT", "4002"))
+
+def _cid() -> int:
+    return int(os.getenv("IBKR_CLIENT_ID", "1"))
 
 
 def _resolve_bid_mid(ib: IB, contract, price_type: str) -> float:
     """Fetch live bid/mid price for a qualified contract."""
-    ticker = ib.reqMktData(contract, "", False, False)
-    ib.sleep(3)
+    ticker = ib.reqMktData(contract, "", snapshot=True)
+    ib.sleep(5)
     bid = ticker.bid
     ask = ticker.ask
-    ib.cancelMktData(contract)
 
     if math.isnan(bid) or bid <= 0 or math.isnan(ask) or ask <= 0:
         raise ValueError("no_market_data")
@@ -37,7 +42,7 @@ def _place_order_sync(d: dict) -> dict:
     """
     ib = IB()
     try:
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID, timeout=10)
+        ib.connect(_host(), _port(), clientId=_cid(), timeout=10)
 
         contract = Option(
             symbol=d["ticker"],
@@ -126,14 +131,14 @@ def _place_order_sync(d: dict) -> dict:
         return {
             "success": False,
             "error": (
-                f"Connection refused at {IBKR_HOST}:{IBKR_PORT}. "
+                f"Connection refused at {_host()}:{_port()}. "
                 "Make sure IB Gateway or TWS is running and API connections are enabled."
             ),
         }
     except TimeoutError:
         return {
             "success": False,
-            "error": f"Connection timed out at {IBKR_HOST}:{IBKR_PORT}.",
+            "error": f"Connection timed out at {_host()}:{_port()}.",
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -147,7 +152,7 @@ def _get_position_sync(d: dict) -> int:
     """Returns current position size for the contract (0 if not held)."""
     ib = IB()
     try:
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID + 1, timeout=10)
+        ib.connect(_host(), _port(), clientId=_cid() + 1, timeout=10)
         ib.sleep(1)
         target_right  = _RIGHT[d["option_type"].upper()]
         target_expiry = d["expiry"].replace("-", "")
@@ -180,7 +185,7 @@ async def get_position(d: dict) -> int:
 def _get_account_summary_sync() -> dict:
     ib = IB()
     try:
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID + 2, timeout=10)
+        ib.connect(_host(), _port(), clientId=_cid() + 2, timeout=10)
         ib.sleep(1)
 
         vals = {v.tag: v.value for v in ib.accountValues() if v.currency in ("USD", "")}
@@ -204,7 +209,7 @@ def _get_account_summary_sync() -> dict:
 def _get_open_positions_sync() -> list:
     ib = IB()
     try:
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID + 3, timeout=10)
+        ib.connect(_host(), _port(), clientId=_cid() + 3, timeout=10)
         ib.sleep(1)
         result = []
         for pos in ib.positions():
@@ -232,7 +237,7 @@ def _get_open_positions_sync() -> list:
 def _get_pending_orders_sync() -> list:
     ib = IB()
     try:
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID + 4, timeout=10)
+        ib.connect(_host(), _port(), clientId=_cid() + 4, timeout=10)
         ib.reqAllOpenOrders()
         ib.sleep(2)
         result = []
@@ -267,7 +272,7 @@ def _get_pending_orders_sync() -> list:
 def _cancel_order_sync(order_id: int) -> dict:
     ib = IB()
     try:
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID, timeout=10)
+        ib.connect(_host(), _port(), clientId=_cid(), timeout=10)
         # Direct protocol call — no reqAllOpenOrders (that rebinds orders and
         # causes them to be cancelled when this short-lived session disconnects)
         ib.client.cancelOrder(order_id, "")
@@ -288,7 +293,7 @@ def _modify_order_sync(order_id: int, new_price, order_info: dict) -> dict:
     """
     ib = IB()
     try:
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID, timeout=10)
+        ib.connect(_host(), _port(), clientId=_cid(), timeout=10)
 
         # Cancel original order directly by orderId
         ib.client.cancelOrder(order_id, "")
@@ -389,23 +394,22 @@ def _get_market_data_sync(d: dict) -> dict:
     """
     Fetch market data for an options contract.
     1. Portfolio price — instant, no subscription, works for held positions.
-    2. Live reqMktData — requires OPRA subscription.
+    2. Live reqMktData (type 1) — requires OPRA subscription, snapshot=True.
     3. Delayed reqMktData (type 3) — free 15-20 min delay.
-       Note: delayed data uses ticker.delayedBid/Ask/Last attributes.
-    Uses clientId=6 (free slot).
+    Uses clientId=_cid()+5 (free slot, read dynamically).
     """
-    import math
     ib = IB()
     try:
-        ib.connect(IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID + 5, timeout=10)
+        ib.connect(_host(), _port(), clientId=_cid() + 5, timeout=10)
         ib.sleep(1)  # let account data arrive
 
         def _clean(v):
             return round(v, 2) if (v is not None and not math.isnan(v) and v > 0) else None
 
-        # Step 1: portfolio price — instant, no subscription needed
-        target_right  = _RIGHT[d["option_type"].upper()]
-        target_expiry = d["expiry"].replace("-", "")
+        # Step 1: check portfolio for last price — instant fallback, no subscription needed
+        target_right   = _RIGHT[d["option_type"].upper()]
+        target_expiry  = d["expiry"].replace("-", "")
+        portfolio_last = None
         for item in ib.portfolio():
             c = item.contract
             if (c.symbol == d["ticker"] and
@@ -413,11 +417,10 @@ def _get_market_data_sync(d: dict) -> dict:
                     abs(c.strike - float(d["strike"])) < 0.01 and
                     c.lastTradeDateOrContractMonth == target_expiry and
                     item.marketPrice > 0 and not math.isnan(item.marketPrice)):
-                return {"success": True, "bid": None, "ask": None,
-                        "last": round(item.marketPrice, 2), "delayed": False}
+                portfolio_last = round(item.marketPrice, 2)
+                break
 
-        # Step 2: qualify contract then try live/delayed reqMktData
-        # Try SMART first; fall back to CBOE with SPXW/SPX trading class for index options
+        # Step 2: qualify contract — SMART first, then CBOE for index options
         contract = Option(
             symbol=d["ticker"],
             lastTradeDateOrContractMonth=target_expiry,
@@ -441,29 +444,48 @@ def _get_market_data_sync(d: dict) -> dict:
                     qualified = True
                     break
             if not qualified:
-                return {"success": True, "bid": None, "ask": None, "last": None, "delayed": False}
+                return {"success": True, "bid": None, "ask": None,
+                        "last": portfolio_last, "delayed": False}
 
-        # Live data (requires OPRA subscription)
+        # Index options (SPXW/SPX/NDXP/NDX): SMART routing triggers 10197 on reqMktData.
+        # Switch to CBOE exchange for the actual data request (qualification via SMART is fine).
+        _INDEX_CLASSES = {"SPXW", "SPX", "NDXP", "NDX"}
+        if getattr(contract, "tradingClass", "") in _INDEX_CLASSES:
+            contract = Option(
+                conId=contract.conId,
+                symbol=contract.symbol,
+                lastTradeDateOrContractMonth=contract.lastTradeDateOrContractMonth,
+                strike=contract.strike,
+                right=contract.right,
+                exchange="CBOE", currency="USD", multiplier="100",
+                tradingClass=contract.tradingClass,
+            )
+
+        # Step 3: live data (requires OPRA subscription)
+        # snapshot=True auto-cancels server-side after one tick, avoiding stale session locks
         ib.reqMarketDataType(1)
-        ticker = ib.reqMktData(contract, "", False, False)
-        ib.sleep(3)
-        bid, ask, last = _clean(ticker.bid), _clean(ticker.ask), _clean(ticker.last)
-        ib.cancelMktData(contract)
+        ticker = ib.reqMktData(contract, "", snapshot=True)
+        ib.sleep(6)
+        bid  = _clean(ticker.bid)
+        ask  = _clean(ticker.ask)
+        last = _clean(ticker.last)
         if bid is not None or ask is not None or last is not None:
-            return {"success": True, "bid": bid, "ask": ask, "last": last, "delayed": False}
+            return {"success": True, "bid": bid, "ask": ask,
+                    "last": last if last is not None else portfolio_last, "delayed": False}
 
-        # Delayed data (free, 15-20 min — uses delayedBid/Ask/Last attributes)
+        # Step 4: delayed snapshot (free, 15-20 min delay)
         ib.reqMarketDataType(3)
-        ticker = ib.reqMktData(contract, "", False, False)
-        ib.sleep(4)
-        bid  = _clean(ticker.delayedBid)
-        ask  = _clean(ticker.delayedAsk)
-        last = _clean(ticker.delayedLast)
-        ib.cancelMktData(contract)
+        ticker = ib.reqMktData(contract, "", snapshot=True)
+        ib.sleep(6)
+        bid  = _clean(ticker.bid)
+        ask  = _clean(ticker.ask)
+        last = _clean(ticker.last)
         if bid is not None or ask is not None or last is not None:
-            return {"success": True, "bid": bid, "ask": ask, "last": last, "delayed": True}
+            return {"success": True, "bid": bid, "ask": ask,
+                    "last": last if last is not None else portfolio_last, "delayed": True}
 
-        return {"success": True, "bid": None, "ask": None, "last": None, "delayed": False}
+        return {"success": True, "bid": None, "ask": None,
+                "last": portfolio_last, "delayed": False}
     except Exception as e:
         return {"success": False, "error": str(e)}
     finally:

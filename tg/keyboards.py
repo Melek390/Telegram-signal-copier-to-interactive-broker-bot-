@@ -53,6 +53,13 @@ def confirm_change_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+def login_mode_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Live Trading",  callback_data=cb.LOGIN_LIVE),
+        InlineKeyboardButton("Paper Trading", callback_data=cb.LOGIN_PAPER),
+    ]])
+
+
 def signal_confirm_keyboard() -> InlineKeyboardMarkup:
     """Confirm / Cancel — used when asking user to enter price first."""
     return InlineKeyboardMarkup([[
@@ -62,9 +69,8 @@ def signal_confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 def signal_confirm_change_keyboard() -> InlineKeyboardMarkup:
-    """Confirm / Change Price / Cancel — used on full signal order summaries."""
+    """Confirm / Cancel — used on all signal order summaries."""
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton("Confirm",      callback_data=cb.SIG_CONFIRM),
-        InlineKeyboardButton("Change Price", callback_data=cb.SIG_CHANGE_PRICE),
-        InlineKeyboardButton("Cancel",       callback_data=cb.SIG_CANCEL),
+        InlineKeyboardButton("Confirm", callback_data=cb.SIG_CONFIRM),
+        InlineKeyboardButton("Cancel",  callback_data=cb.SIG_CANCEL),
     ]])
