@@ -1,6 +1,18 @@
-# IBKR Options Trading Bot
+# Telegram → IBKR Signal Trade Copier
 
-A Telegram bot that places and manages **options orders on Interactive Brokers** through the IB Gateway API. It supports manual order entry (one-line or step-by-step), live market-data previews at confirmation, position and pending-order management, and an automated **signal listener** that reads trade signals posted to a Telegram channel (image + text), OCRs them, and turns them into ready-to-confirm orders.
+> **Copies trade signals from a Telegram channel straight into Interactive Brokers as live options orders.**
+
+A trade-copier bot that bridges a **Telegram signal channel** and an **Interactive Brokers** account. It listens to a channel in real time, reads each posted signal — including **screenshots, via OCR** — and turns it into a ready-to-confirm options order on IBKR. Beyond the automated signal flow, it doubles as a full manual trading terminal in Telegram: place orders by text, preview live bid/ask/last before confirming, and manage open positions and working orders — all from chat.
+
+**Highlights**
+
+- 📡 **Live signal listening** — watches a Telegram channel and reacts to every new signal instantly.
+- 🖼️ **OCR signal parsing** — extracts ticker, strike, expiry, side, and price from signal *images* (Google Vision, Tesseract fallback).
+- ⚡ **One-tap copy to broker** — a parsed signal becomes a confirmable IBKR order in two taps.
+- 💹 **Live market data** — bid/ask/last shown at confirmation so you never trade blind.
+- 🧾 **Full order management** — buy/sell, limit/market, position closing, and pending-order cancel/modify.
+- 🔐 **Secure web login** — switch paper/live and enter broker credentials via a one-time private web form (never through Telegram).
+- ♻️ **Self-healing deployment** — a watchdog auto-restarts the broker gateway within seconds of any crash.
 
 ---
 
