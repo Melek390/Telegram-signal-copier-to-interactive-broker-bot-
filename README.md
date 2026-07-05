@@ -16,22 +16,47 @@ A trade-copier bot that bridges a **Telegram signal channel** and an **Interacti
 
 ---
 
+## Screenshots
+
+**Signal auto-detected from the channel → ready-to-confirm order**
+A signal posted to the Telegram channel is OCR-parsed and turned into a filled order in two taps.
+
+<img src="assets/signal-detected.png" width="430" alt="Signal detected from the channel and parsed into an order">
+
+**Live market data at confirmation**
+Live bid/ask is pulled from IBKR and shown before you confirm — you never trade blind.
+
+<img src="assets/live-market-data.png" width="660" alt="Order summary showing live bid/ask from IBKR">
+
+**Live IBKR account connection**
+The bot connects to IB Gateway and reports real account status on demand.
+
+<img src="assets/account-connected.png" width="430" alt="Account summary — gateway connected, net liquidation and funds">
+
+**Position management from chat**
+List open option positions and close any of them (full, partial, or by percentage).
+
+<img src="assets/open-positions.png" width="540" alt="Open positions list with per-position close buttons">
+
+---
+
 ## Table of Contents
 
-1. [Features](#features)
-2. [Architecture](#architecture)
-3. [Requirements](#requirements)
-4. [Configuration (`.env`)](#configuration-env)
-5. [Setup](#setup)
-6. [Bot Command Reference](#bot-command-reference)
-7. [Order Format](#order-format)
-8. [Signal Listener (Telethon)](#signal-listener-telethon)
-9. [OCR Pipeline](#ocr-pipeline)
-10. [Web-Based Login](#web-based-login)
-11. [Market Data Behaviour](#market-data-behaviour)
-12. [Deployment & Auto-Recovery](#deployment--auto-recovery)
-13. [IBKR Gotchas Worth Knowing](#ibkr-gotchas-worth-knowing)
-14. [Project Structure](#project-structure)
+1. [Screenshots](#screenshots)
+2. [Features](#features)
+3. [Architecture](#architecture)
+4. [Requirements](#requirements)
+5. [Configuration (`.env`)](#configuration-env)
+6. [Setup](#setup)
+7. [Bot Command Reference](#bot-command-reference)
+8. [Order Format](#order-format)
+9. [Signal Listener (Telethon)](#signal-listener-telethon)
+10. [OCR Pipeline](#ocr-pipeline)
+11. [Web-Based Login](#web-based-login)
+12. [Market Data Behaviour](#market-data-behaviour)
+13. [Deployment & Auto-Recovery](#deployment--auto-recovery)
+14. [IBKR Gotchas Worth Knowing](#ibkr-gotchas-worth-knowing)
+15. [Project Structure](#project-structure)
 
 ---
 

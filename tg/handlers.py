@@ -42,6 +42,7 @@ ORD_ACTION, ORD_NEW_PRICE, ORD_MODIFY_CONFIRM = range(20, 23)
 LOGIN_MODE, LOGIN_ID, LOGIN_PASSWORD = range(30, 33)
 
 _authorized_ids: set[int] = set()
+_active_login_server = None  # currently-running login HTTP server (so a new login can replace it)
 
 
 def set_authorized_users(user_ids: list[int]) -> None:
@@ -600,8 +601,22 @@ async def _do_login(ibkr_id: str, password: str, mode: str, application, chat_id
 
 def _start_login_server(token: str, port: int, mode: str,
                         application, ptb_loop, chat_id: int) -> None:
-    """Start a temporary HTTP server that accepts credentials once, then shuts down."""
+    """Start a temporary HTTP server that accepts credentials once, then shuts down.
+
+    If a previous login server is still running (e.g. the user tapped the other
+    trading-mode button within the 2-min window), it is closed first so the port
+    can be rebound — otherwise the second tap would fail with 'address in use'.
+    """
+    global _active_login_server
     label = "Live Trading" if mode == "live" else "Paper Trading"
+
+    # Tear down any previous login server so we can rebind the port
+    if _active_login_server is not None:
+        try:
+            _active_login_server.server_close()
+        except Exception:
+            pass
+        _active_login_server = None
 
     class Handler(http.server.BaseHTTPRequestHandler):
         _done = False
@@ -641,14 +656,27 @@ def _start_login_server(token: str, port: int, mode: str,
                 ptb_loop,
             )
 
-    server = http.server.HTTPServer(("0.0.0.0", port), Handler)
+    class _ReuseServer(http.server.HTTPServer):
+        allow_reuse_address = True  # rebind immediately even if a socket lingers in TIME_WAIT
+
+    server = _ReuseServer(("0.0.0.0", port), Handler)
+    _active_login_server = server
 
     def _serve():
+        global _active_login_server
         server.timeout = 1
         deadline = time.time() + 120
         while not Handler._done and time.time() < deadline:
-            server.handle_request()
-        server.server_close()
+            try:
+                server.handle_request()
+            except OSError:
+                break  # socket was closed by a newer login starting up
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        if _active_login_server is server:
+            _active_login_server = None
 
     threading.Thread(target=_serve, daemon=True, name=f"login-{port}").start()
 
@@ -675,7 +703,14 @@ async def login_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     vps_ip = os.getenv("VPS_IP", "127.0.0.1")
 
     ptb_loop = asyncio.get_event_loop()
-    _start_login_server(token, port, mode, context.application, ptb_loop, query.message.chat_id)
+    try:
+        _start_login_server(token, port, mode, context.application, ptb_loop, query.message.chat_id)
+    except Exception as e:
+        await query.edit_message_text(
+            f"Could not start the login page: `{e}`\n\nTry again in a moment.",
+            parse_mode="Markdown",
+        )
+        return ConversationHandler.END
 
     await query.edit_message_text(
         f"*{label}* selected.\n\n"
@@ -964,7 +999,10 @@ async def pos_close_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.edit_message_text("Cancelled.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    idx = int(query.data.split(":")[1])
+    parts = query.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return POS_CLOSE_INPUT  # ignore stray callback, stay in state
+    idx = int(parts[1])
     positions = context.user_data.get("positions", [])
     if idx >= len(positions):
         await query.edit_message_text("Position no longer available.")

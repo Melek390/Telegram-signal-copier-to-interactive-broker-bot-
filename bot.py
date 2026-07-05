@@ -80,7 +80,7 @@ def main():
     pos_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(r"(?i)^open\s+positions?$"), positions_command)],
         states={
-            POS_CLOSE_INPUT:   [CallbackQueryHandler(pos_close_select)],
+            POS_CLOSE_INPUT:   [CallbackQueryHandler(pos_close_select, pattern=f"^({cb.POS_CLOSE_PREFIX}\\d+|{cb.CANCEL})$")],
             POS_CLOSE_CONFIRM: [
                 CallbackQueryHandler(pos_close_confirm, pattern=f"^({cb.CONFIRM}|{cb.CANCEL}|{cb.CHANGE_PRICE})$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, pos_close_input),
