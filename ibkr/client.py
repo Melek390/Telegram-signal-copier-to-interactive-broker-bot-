@@ -20,8 +20,34 @@ def _cid() -> int:
     return int(os.getenv("IBKR_CLIENT_ID", "1"))
 
 
-def _resolve_bid_mid(ib: IB, contract, price_type: str) -> float:
-    """Fetch live bid/mid price for a qualified contract."""
+def _min_tick(ib: IB, contract) -> float:
+    """
+    Contract's minimum price variation. IBKR rejects any limit price that is not a
+    multiple of this (Error 110) — e.g. SPX trades in 0.05/0.10, not 0.01.
+    Falls back to 0.01 when details are unavailable.
+    """
+    try:
+        details = ib.reqContractDetails(contract)
+        if details:
+            tick = float(getattr(details[0], "minTick", 0) or 0)
+            if tick > 0:
+                return tick
+    except Exception:
+        pass
+    return 0.01
+
+
+def _round_to_tick(price: float, tick: float) -> float:
+    """Snap a price to the nearest valid tick multiple."""
+    if not tick or tick <= 0:
+        return round(price, 2)
+    steps = round(price / tick)
+    # 6dp guard against binary-float artifacts (e.g. 3*0.05 -> 0.15000000000000002)
+    return round(round(steps * tick, 6), 6)
+
+
+def _resolve_bid_mid(ib: IB, contract, price_type: str, tick: float | None = None) -> float:
+    """Fetch live bid/mid price for a qualified contract, snapped to a valid tick."""
     ticker = ib.reqMktData(contract, "", snapshot=True)
     ib.sleep(5)
     bid = ticker.bid
@@ -30,9 +56,10 @@ def _resolve_bid_mid(ib: IB, contract, price_type: str) -> float:
     if math.isnan(bid) or bid <= 0 or math.isnan(ask) or ask <= 0:
         raise ValueError("no_market_data")
 
-    if price_type == "bid":
-        return round(bid, 2)
-    return round((bid + ask) / 2, 2)
+    raw = bid if price_type == "bid" else (bid + ask) / 2
+    if tick is None:
+        tick = _min_tick(ib, contract)
+    return _round_to_tick(raw, tick)
 
 
 def _place_order_sync(d: dict) -> dict:
@@ -67,12 +94,14 @@ def _place_order_sync(d: dict) -> dict:
 
         order_type = d.get("order_type", "mkt")
         action     = d["action"].upper()
+        tick       = _min_tick(ib, contract)
 
         if order_type == "limit":
+            # Snap to a valid tick — IBKR rejects off-tick prices with Error 110
             order = LimitOrder(
                 action=action,
                 totalQuantity=d["size"],
-                lmtPrice=d["limit_price"],
+                lmtPrice=_round_to_tick(float(d["limit_price"]), tick),
             )
 
         else:
@@ -80,7 +109,7 @@ def _place_order_sync(d: dict) -> dict:
             # if market is closed / no data, fall back to a true market order
             smart_type = "bid" if action == "BUY" else "mid"
             try:
-                lmt_price = _resolve_bid_mid(ib, contract, smart_type)
+                lmt_price = _resolve_bid_mid(ib, contract, smart_type, tick)
                 order = LimitOrder(
                     action=action,
                     totalQuantity=d["size"],
@@ -237,8 +266,11 @@ def _get_open_positions_sync() -> list:
 def _get_pending_orders_sync() -> list:
     ib = IB()
     try:
-        ib.connect(_host(), _port(), clientId=_cid() + 4, timeout=10)
-        ib.reqAllOpenOrders()
+        # Connect as the SAME clientId that placed the orders and use reqOpenOrders()
+        # (this client's orders only). reqAllOpenOrders() adopts orders owned by other
+        # clients into this short-lived session — they get cancelled on disconnect.
+        ib.connect(_host(), _port(), clientId=_cid(), timeout=10)
+        ib.reqOpenOrders()
         ib.sleep(2)
         result = []
         for trade in ib.openTrades():
@@ -314,16 +346,19 @@ def _modify_order_sync(order_id: int, new_price, order_info: dict) -> dict:
             return {"success": False, "error": "Contract not found"}
 
         action = order_info["action"].upper()
+        tick   = _min_tick(ib, contract)
+        qty    = abs(int(order_info["qty"]))
 
         if new_price is None:
             smart_type = "bid" if action == "BUY" else "mid"
             try:
-                new_price = _resolve_bid_mid(ib, contract, smart_type)
-                order = LimitOrder(action=action, totalQuantity=order_info["qty"], lmtPrice=new_price)
+                new_price = _resolve_bid_mid(ib, contract, smart_type, tick)
+                order = LimitOrder(action=action, totalQuantity=qty, lmtPrice=new_price)
             except ValueError:
-                order = MarketOrder(action=action, totalQuantity=order_info["qty"])
+                order = MarketOrder(action=action, totalQuantity=qty)
         else:
-            order = LimitOrder(action=action, totalQuantity=order_info["qty"], lmtPrice=new_price)
+            order = LimitOrder(action=action, totalQuantity=qty,
+                               lmtPrice=_round_to_tick(float(new_price), tick))
 
         trade = ib.placeOrder(contract, order)
         ib.sleep(4)

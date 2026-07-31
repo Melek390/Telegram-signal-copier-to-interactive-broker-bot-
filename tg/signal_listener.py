@@ -111,8 +111,14 @@ async def _handle_message(client, message, application, user_ids: list[int], ptb
 
 async def _listener_loop(application, user_ids: list[int], ptb_loop) -> None:
     """Telethon reconnect loop — runs inside the daemon thread's own event loop."""
+    if not SIGNAL_CHANNEL or not API_ID or not API_HASH:
+        print("[signal_listener] SIGNAL_CHANNEL / TELEGRAM_API_ID / API_HASH missing — "
+              "listener disabled.", flush=True)
+        return
+
     backoff = 30
     while True:
+        client = None
         try:
             client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
             await client.start()
@@ -129,6 +135,13 @@ async def _listener_loop(application, user_ids: list[int], ptb_loop) -> None:
 
         except Exception as e:
             print(f"[signal_listener] Disconnected ({e}), retrying in {backoff}s...", flush=True)
+        finally:
+            # Always release the old client so reconnects don't leak sessions
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
 
         await asyncio.sleep(backoff)
 

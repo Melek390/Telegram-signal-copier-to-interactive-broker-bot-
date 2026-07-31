@@ -97,15 +97,17 @@ def _parse_price(price_str: str) -> tuple[str, float | None] | None:
 
 
 def _parse_qty(qty_str: str, position: int = 0) -> int | None:
+    """Resolve a quantity. `position` may be negative (short) — magnitude is what matters."""
     s = qty_str.strip().lower()
+    held = abs(position)
     if s == "all":
-        return position if position > 0 else None
+        return held if held > 0 else None
     if s.endswith("%"):
         try:
             pct = float(s[:-1])
-            if not (0 < pct <= 100) or position <= 0:
+            if not (0 < pct <= 100) or held <= 0:
                 return None
-            return max(1, round(position * pct / 100))
+            return max(1, round(held * pct / 100))
         except ValueError:
             return None
     try:
@@ -1082,8 +1084,11 @@ async def pos_close_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
     p = context.user_data["closing_pos"]
+    # Closing a LONG position sells; closing a SHORT position buys back.
+    # Hardcoding "Sell" would double a short instead of closing it.
+    close_action = "Sell" if p.get("qty", 0) >= 0 else "Buy"
     order_data = {
-        "action":      "Sell",
+        "action":      close_action,
         "ticker":      p["ticker"],
         "option_type": p["option_type"],
         "strike":      p["strike"],
@@ -1133,7 +1138,10 @@ async def ord_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.edit_message_text("Done.", parse_mode="Markdown")
         return ConversationHandler.END
 
-    idx = int(query.data.split(":")[1])
+    parts = query.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return ORD_ACTION  # ignore stray callback, stay in state
+    idx = int(parts[1])
     orders = context.user_data.get("orders", [])
     if idx >= len(orders):
         await query.edit_message_text("Order no longer available.")

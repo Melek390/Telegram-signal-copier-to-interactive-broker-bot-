@@ -119,10 +119,15 @@ def parse_order(ocr_text: str) -> dict:
         "entry_price": None,
     }
 
-    # Ticker — first standalone 1–5 letter word
-    m = re.search(r"\b([A-Z]{1,5})\b", upper)
-    if m:
-        order["ticker"] = m.group(1)
+    # Ticker — first standalone 1–5 letter word that isn't a month or an option word.
+    # Without this guard an OCR layout that emits the date line first yields ticker="JUN".
+    _NOT_TICKERS = set(_MONTH_MAP) | {
+        "CALL", "PUT", "BUY", "SELL", "QTY", "EXP", "AVG", "COST", "USD", "OPT",
+    }
+    for cand in re.findall(r"\b([A-Z]{1,5})\b", upper):
+        if cand not in _NOT_TICKERS:
+            order["ticker"] = cand
+            break
 
     # Option type
     if "CALL" in upper:

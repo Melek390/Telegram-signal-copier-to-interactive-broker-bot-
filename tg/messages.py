@@ -151,14 +151,17 @@ def positions_list(positions: list) -> str:
 def position_close_prompt(p: dict) -> str:
     s = p["strike"]
     strike = int(s) if s == int(s) else s
+    qty      = p.get("qty", 0)
+    held     = abs(qty)                      # examples must be positive, even for shorts
+    side_note = " (short)" if qty < 0 else ""
     return (
         f"*Close Position*\n\n"
         f"{p['ticker']}  {p['option_type']}  {strike}  •  exp {p['expiry']}\n"
-        f"You hold: *{p['qty']}* contract(s)\n\n"
+        f"You hold: *{qty}* contract(s){side_note}\n\n"
         f"Enter quantity and price:\n"
-        f"• `{p['qty']} mkt`   — close all at market\n"
+        f"• `{held} mkt`   — close all at market\n"
         f"• `5 mkt`        — partial at market\n"
-        f"• `{p['qty']} 1.80`  — close all at limit $1.80\n\n"
+        f"• `{held} 1.80`  — close all at limit $1.80\n\n"
         f"Type `0` to go back."
     )
 
@@ -167,9 +170,11 @@ def position_close_summary(p: dict, qty: int, order_type: str, limit_price, mkt:
     s = p["strike"]
     strike = int(s) if s == int(s) else s
     price_line = f"*Limit @ ${limit_price}*" if order_type == "limit" else "*Market*"
+    # Long positions are closed by selling, short positions by buying back
+    close_action = "Sell" if p.get("qty", 0) >= 0 else "Buy"
     return (
         f"*Close Order Summary*\n\n"
-        f"Sell  {qty}x  {p['ticker']}  {p['option_type']}  {strike}  •  exp {p['expiry']}\n"
+        f"{close_action}  {qty}x  {p['ticker']}  {p['option_type']}  {strike}  •  exp {p['expiry']}\n"
         f"Price  :  {price_line}\n"
         f"{_mkt_line(mkt)}"
         f"\nConfirm?"

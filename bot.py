@@ -65,12 +65,15 @@ def main():
         ],
         states={
             TICKER:      [MessageHandler(filters.TEXT & ~filters.COMMAND, ticker_input)],
-            OPTION_TYPE: [CallbackQueryHandler(option_type_callback)],
+            # Patterns are required: an unpatterned CallbackQueryHandler swallows every
+            # inline button (login, signal, ...) and would fall through to placing an order.
+            OPTION_TYPE: [CallbackQueryHandler(option_type_callback, pattern=f"^({cb.CALL}|{cb.PUT})$")],
             STRIKE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, strike_input)],
             DATE:        [MessageHandler(filters.TEXT & ~filters.COMMAND, date_input)],
             PRICE:       [MessageHandler(filters.TEXT & ~filters.COMMAND, price_input)],
             QTY:         [MessageHandler(filters.TEXT & ~filters.COMMAND, qty_input)],
-            CONFIRM:     [CallbackQueryHandler(confirm_callback)],
+            CONFIRM:     [CallbackQueryHandler(confirm_callback,
+                                               pattern=f"^({cb.CONFIRM}|{cb.CANCEL}|{cb.CHANGE_PRICE})$")],
         },
         fallbacks=[CommandHandler("cancel", cancel_command)],
         allow_reentry=True,
