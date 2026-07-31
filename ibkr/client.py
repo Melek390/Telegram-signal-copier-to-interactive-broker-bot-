@@ -62,11 +62,34 @@ def _resolve_bid_mid(ib: IB, contract, price_type: str, tick: float | None = Non
     return _round_to_tick(raw, tick)
 
 
+def _max_contracts() -> int:
+    try:
+        return max(1, int(os.getenv("MAX_CONTRACTS_PER_ORDER", "50")))
+    except ValueError:
+        return 50
+
+
 def _place_order_sync(d: dict) -> dict:
     """
     Blocking IBKR call. Runs in its own thread + event loop so it never
     blocks the Telegram bot's async event loop.
     """
+    # Hard backstop on size. The handlers check this too, but this guarantees no
+    # code path can ever send an oversized order (options are x100 multiplier).
+    try:
+        qty = int(d["size"])
+    except (KeyError, TypeError, ValueError):
+        return {"success": False, "error": f"Invalid quantity: {d.get('size')!r}"}
+    if qty <= 0:
+        return {"success": False, "error": f"Quantity must be positive (got {qty})."}
+    cap = _max_contracts()
+    if qty > cap:
+        return {
+            "success": False,
+            "error": (f"Order blocked: {qty} contracts exceeds the "
+                      f"{cap}-contract limit (MAX_CONTRACTS_PER_ORDER)."),
+        }
+
     ib = IB()
     try:
         ib.connect(_host(), _port(), clientId=_cid(), timeout=10)

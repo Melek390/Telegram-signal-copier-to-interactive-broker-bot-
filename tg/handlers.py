@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.parse
 from datetime import datetime
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import ConversationHandler, ContextTypes
@@ -43,6 +44,41 @@ LOGIN_MODE, LOGIN_ID, LOGIN_PASSWORD = range(30, 33)
 
 _authorized_ids: set[int] = set()
 _active_login_server = None  # currently-running login HTTP server (so a new login can replace it)
+
+# ── Risk guards ────────────────────────────────────────────────────────────────
+# Kill switch. Persisted as a file (NOT in memory) so a halt survives a bot restart
+# and can also be tripped/cleared from the shell. Set by `sleep`, cleared by
+# `wake up` / `login`.
+_HALT_FILE = Path(__file__).resolve().parent.parent / ".trading_halted"
+
+
+def _trading_halted() -> bool:
+    return _HALT_FILE.exists()
+
+
+def _set_trading_halt(halted: bool) -> None:
+    try:
+        if halted:
+            _HALT_FILE.write_text(datetime.now().isoformat(timespec="seconds"))
+        else:
+            _HALT_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass  # never let the guard file break a command
+
+
+def _max_contracts() -> int:
+    """Per-order contract cap. Options are x100, so a stray digit is very expensive."""
+    try:
+        return max(1, int(os.getenv("MAX_CONTRACTS_PER_ORDER", "50")))
+    except ValueError:
+        return 50
+
+
+def _qty_over_cap(qty) -> bool:
+    try:
+        return int(qty) > _max_contracts()
+    except (TypeError, ValueError):
+        return False
 
 
 def set_authorized_users(user_ids: list[int]) -> None:
@@ -409,6 +445,21 @@ async def confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data.clear()
         return ConversationHandler.END
 
+    # Risk guards — checked BEFORE _ensure_gateway so a halt can't be bypassed
+    # by the gateway being restarted on demand.
+    if _trading_halted():
+        await query.edit_message_text(msg.TRADING_HALTED, parse_mode="Markdown")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    size = context.user_data.get("size")
+    if _qty_over_cap(size):
+        await query.edit_message_text(
+            msg.qty_over_cap(int(size), _max_contracts()), parse_mode="Markdown"
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
     if not await _ensure_gateway(query.edit_message_text):
         return ConversationHandler.END
 
@@ -568,6 +619,7 @@ async def _do_login(ibkr_id: str, password: str, mode: str, application, chat_id
     status = await application.bot.send_message(
         chat_id, f"Switching to *{label}*…", parse_mode="Markdown"
     )
+    _set_trading_halt(False)  # a deliberate login clears the kill switch
     _update_ibc_config(ibkr_id, password, mode)
     _update_watchdog_script(port, mode)
     _update_env_port(port)
@@ -726,6 +778,7 @@ async def login_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @authorized
 async def wake_up_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _set_trading_halt(False)  # waking up clears the kill switch set by `sleep`
     if not await _ensure_gateway(update.message.reply_text):
         return
     summary = await ibkr_get_account_summary()
@@ -737,6 +790,9 @@ async def wake_up_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 @authorized
 async def sleep_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Kill switch: set the halt flag FIRST so no in-flight confirmation can slip an
+    # order through by restarting the gateway via _ensure_gateway().
+    _set_trading_halt(True)
     subprocess.run(["tmux", "kill-session", "-t", "gatewaywatchdog"], capture_output=True)
     subprocess.run(["pkill", "-f", "ibgateway"], capture_output=True)
     await update.message.reply_text(msg.SLEEPING, parse_mode="Markdown")
@@ -898,6 +954,16 @@ async def sig_price_input(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 raise ValueError
         except ValueError:
             await update.message.reply_text("Invalid quantity. Enter a positive integer.", parse_mode="Markdown")
+            return
+
+        # Risk guards — this path places immediately with no second confirmation
+        if _trading_halted():
+            await update.message.reply_text(msg.TRADING_HALTED, parse_mode="Markdown")
+            return
+        if _qty_over_cap(qty):
+            await update.message.reply_text(
+                msg.qty_over_cap(qty, _max_contracts()), parse_mode="Markdown"
+            )
             return
 
         order_type, limit_price = price_result
@@ -1098,6 +1164,15 @@ async def pos_close_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "size":        context.user_data["close_qty"],
     }
 
+    if _trading_halted():
+        await query.edit_message_text(msg.TRADING_HALTED, parse_mode="Markdown")
+        return ConversationHandler.END
+    if _qty_over_cap(order_data["size"]):
+        await query.edit_message_text(
+            msg.qty_over_cap(int(order_data["size"]), _max_contracts()), parse_mode="Markdown"
+        )
+        return ConversationHandler.END
+
     if not await _ensure_gateway(query.edit_message_text):
         return ConversationHandler.END
 
@@ -1234,6 +1309,12 @@ async def ord_modify_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if query.data == cb.CANCEL:
         await query.edit_message_text(msg.CANCELLED, parse_mode="Markdown")
+        return ConversationHandler.END
+
+    # Modify is cancel+replace — it places a new order, so the halt applies.
+    # (Plain cancel is deliberately still allowed: it only reduces exposure.)
+    if _trading_halted():
+        await query.edit_message_text(msg.TRADING_HALTED, parse_mode="Markdown")
         return ConversationHandler.END
 
     o = context.user_data["selected_order"]

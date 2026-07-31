@@ -10,17 +10,38 @@ HELP = (
     "`details`         — show account summary\n"
     "`open positions`  — view & close positions\n"
     "`pending orders`  — view, cancel & modify orders\n\n"
+    "*Session:*\n"
+    "`wake up`         — start gateway & resume trading\n"
+    "`sleep`           — 🛑 halt trading & stop gateway\n"
+    "`logout`          — clean IBKR logout\n"
+    "`login`           — switch paper/live account\n\n"
     "Use /cancel at any time to start over."
 )
 
 WAKING_UP = "Connecting to IBKR, please wait..."
 
 SLEEPING = (
-    "*Bot is sleeping*\n\n"
+    "*Bot is sleeping — trading halted* 🛑\n\n"
     "Gateway disconnected. Watchdog stopped.\n"
+    "*No orders can be placed until you wake the bot* — this survives a bot restart.\n"
     "You can now log into your IBKR account freely.\n\n"
     "Type `wake up` when you want to trade again."
 )
+
+TRADING_HALTED = (
+    "*Trading is halted* 🛑\n\n"
+    "The bot is asleep, so this order was *not* placed.\n\n"
+    "Type `wake up` to resume trading."
+)
+
+
+def qty_over_cap(qty: int, cap: int) -> str:
+    return (
+        f"*Order blocked — quantity too large* 🛑\n\n"
+        f"You entered *{qty}* contracts; the limit is *{cap}* per order.\n"
+        f"Options are ×100, so *{qty}* contracts controls *{qty * 100:,}* shares.\n\n"
+        f"Re-enter a smaller quantity, or raise `MAX_CONTRACTS_PER_ORDER` in `.env`."
+    )
 
 LOGGED_OUT = (
     "*Logged out from IBKR* ✓\n\n"

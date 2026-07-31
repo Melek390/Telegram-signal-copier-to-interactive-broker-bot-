@@ -9,6 +9,9 @@
 service-account*.json
 *-credentials.json
 
+# ── Runtime state ────────────────────────────────────────────────────
+.trading_halted        # kill-switch flag written by the `sleep` command
+
 # ── Python ───────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
