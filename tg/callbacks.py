@@ -25,3 +25,12 @@ CHANGE_PRICE = "change_price"
 # login flow
 LOGIN_LIVE  = "login_live"
 LOGIN_PAPER = "login_paper"
+
+# "Switch to MARKET" on an unfilled automated order — m2m:<order_id>
+M2M_PREFIX = "m2m:"
+
+# Sleep-guard snooze — gsnooze:<seconds>
+GUARD_SNOOZE_PREFIX = "gsnooze:"
+
+# Manual retry of a missed signal at market — mrt:<signal message id>
+RETRY_PREFIX = "mrt:"

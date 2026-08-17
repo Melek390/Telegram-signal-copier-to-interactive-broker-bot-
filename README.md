@@ -1,94 +1,183 @@
 # Telegram → IBKR Signal Trade Copier
 
-> **Copies trade signals from a Telegram channel straight into Interactive Brokers as live options orders.**
+> **Copies trade signals from a Telegram channel straight into Interactive Brokers as live options orders — fully automatically.**
 
-A trade-copier bot that bridges a **Telegram signal channel** and an **Interactive Brokers** account. It listens to a channel in real time, reads each posted signal — including **screenshots, via OCR** — and turns it into a ready-to-confirm options order on IBKR. Beyond the automated signal flow, it doubles as a full manual trading terminal in Telegram: place orders by text, preview live bid/ask/last before confirming, and manage open positions and working orders — all from chat.
+A trade-copier bot that bridges a **Telegram signal channel** and an **Interactive Brokers** account. It watches the channel in real time, reads each signal — Arabic text plus a broker screenshot — and places the order itself: no confirmation step, no manual input. Telegram is used for **monitoring and recovery**, not for trading by hand.
 
 **Highlights**
 
-- 📡 **Live signal listening** — watches a Telegram channel and reacts to every new signal instantly.
-- 🖼️ **OCR signal parsing** — extracts ticker, strike, expiry, side, and price from signal *images* (Google Vision, Tesseract fallback).
-- ⚡ **One-tap copy to broker** — a parsed signal becomes a confirmable IBKR order in two taps.
-- 💹 **Live market data** — bid/ask/last shown at confirmation so you never trade blind.
-- 🧾 **Full order management** — buy/sell, limit/market, position closing, and pending-order cancel/modify.
-- 🔐 **Secure web login** — switch paper/live and enter broker credentials via a one-time private web form (never through Telegram).
-- ♻️ **Self-healing deployment** — a watchdog auto-restarts the broker gateway within seconds of any crash.
+- 📡 **Live signal listening** — reacts to every new channel message within seconds.
+- 🧠 **Two-layer reading** — trading rules are literal keyword checks in *code*; an AI model (Claude Haiku) only reads the contract card image. Deterministic decisions, no prompt drift.
+- 🤖 **Fully automated execution** — entry, average-in and emergency exit are placed without human input.
+- 🪜 **Price-ladder fills** — buys start at the bid and step **+5¢ every 5 s**; sells start at the ask and step **−5¢** — until filled. No blind market orders.
+- 🛡️ **Take-profit discipline** — every entry gets a sell limit at the signal's first target, re-armed automatically each morning after the open.
+- 🚨 **Self-monitoring** — alerts for sleep mode, lost gateway and lost market data, each snoozable; daily pre-market status check.
+- 🔐 **Secure web login** — switch paper/live and enter broker credentials (and the target sub-account) through a one-time private web form, never through Telegram.
+- ♻️ **Self-healing deployment** — watchdogs restart the broker gateway and re-apply the read-only-API fix automatically.
 
 ---
 
-## Screenshots
+## Screenshot
 
-**Signal auto-detected from the channel → ready-to-confirm order**
-A signal posted to the Telegram channel is OCR-parsed and turned into a filled order in two taps.
-
-<img src="assets/signal-detected.png" width="430" alt="Signal detected from the channel and parsed into an order">
-
-**Live market data at confirmation**
-Live bid/ask is pulled from IBKR and shown before you confirm — you never trade blind.
-
-<img src="assets/live-market-data.png" width="660" alt="Order summary showing live bid/ask from IBKR">
-
-**Live IBKR account connection**
-The bot connects to IB Gateway and reports real account status on demand.
+**Account status on demand** — `wake up` starts the gateway and reports real account state.
 
 <img src="assets/account-connected.png" width="430" alt="Account summary — gateway connected, net liquidation and funds">
-
-**Position management from chat**
-List open option positions and close any of them (full, partial, or by percentage).
-
-<img src="assets/open-positions.png" width="540" alt="Open positions list with per-position close buttons">
 
 ---
 
 ## Table of Contents
 
-1. [Screenshots](#screenshots)
-2. [Features](#features)
-3. [Architecture](#architecture)
-4. [Requirements](#requirements)
-5. [Configuration (`.env`)](#configuration-env)
-6. [Setup](#setup)
-7. [Bot Command Reference](#bot-command-reference)
-8. [Order Format](#order-format)
-9. [Signal Listener (Telethon)](#signal-listener-telethon)
-10. [OCR Pipeline](#ocr-pipeline)
-11. [Web-Based Login](#web-based-login)
-12. [Market Data Behaviour](#market-data-behaviour)
-13. [Deployment & Auto-Recovery](#deployment--auto-recovery)
-14. [IBKR Gotchas Worth Knowing](#ibkr-gotchas-worth-knowing)
-15. [Project Structure](#project-structure)
+1. [How a Signal Becomes an Order](#how-a-signal-becomes-an-order)
+2. [Order Execution Rules](#order-execution-rules)
+3. [Bot Command Reference](#bot-command-reference)
+4. [Buttons the Bot Offers](#buttons-the-bot-offers)
+5. [Automatic Monitoring](#automatic-monitoring)
+6. [Architecture](#architecture)
+7. [Requirements](#requirements)
+8. [Configuration (`.env`)](#configuration-env)
+9. [Setup](#setup)
+10. [Web-Based Login](#web-based-login)
+11. [Market Data Behaviour](#market-data-behaviour)
+12. [Deployment & Auto-Recovery](#deployment--auto-recovery)
+13. [IBKR Gotchas Worth Knowing](#ibkr-gotchas-worth-knowing)
+14. [Project Structure](#project-structure)
 
 ---
 
-## Features
+## How a Signal Becomes an Order
 
-- **Place options orders from Telegram** — buy/sell, calls/puts, market or limit.
-- **One-line orders:** `buy spy c609 0605 mkt 2`.
-- **Step-by-step guided flow:** just type `buy` or `sell` and answer each prompt.
-- **Live market data at confirmation** — bid / ask / last shown before you confirm.
-- **Open positions** — list and close (partial `5 mkt`, full `all`, or percentage `50%`).
-- **Pending orders** — list, cancel, or modify the limit price (cancel + replace).
-- **Signal listener** — watches a Telegram channel, OCRs signal images, and produces a confirmable order automatically.
-- **Web-based login** — switch between paper/live and enter IBKR credentials through a one-time private web form (credentials never travel through Telegram).
-- **Authorized-user gating** — only whitelisted Telegram user IDs can use the bot.
-- **Automatic gateway recovery** — a watchdog restarts IB Gateway within seconds of any crash.
+```
+channel message
+   │
+   ├─ 1. prefilter (code)      no image → dropped, free, no API call
+   ├─ 2. classify (code)       literal Arabic keyword rules → buy / buy_more / exit / ignore
+   ├─ 3. read card (Claude)    contract card vs chart + ticker, strike, expiry, price, target
+   └─ 4. execute (IBKR)        price ladder + take-profit, then a Telegram report
+```
+
+**Classification lives in code, not in the prompt.** The rules are literal substring checks on the message text:
+
+| Text contains | Action |
+|---|---|
+| `المتوسط` | **average-in** — cancel the take-profit, buy more, re-place one take-profit for the whole position |
+| `بسم الله` + `كول`/`بوت` | **buy** — new entry |
+| `خفف` **without** `الهدف`/`الاهداف` | **emergency exit** — sell the whole position |
+| anything else | ignore |
+
+The model's only job is perception: is the screenshot a **contract card** or a **price chart** (charts are ignored), and what values are printed on it. This split removed a ~7% decision-error rate measured over a 1,525-message archive replay; the final architecture ran 1,140 consecutive messages with **zero** classification errors.
+
+**Late targets:** the channel often edits the targets line in *seconds after* posting. If an entry fills before a target exists, the bot remembers the message and places the take-profit automatically the moment the edit arrives.
+
+---
+
+## Order Execution Rules
+
+**Entry / emergency exit / morning clean-up sell all use the same price ladder:**
+
+- **Buy** — first limit at the **bid**, then **+5¢ every 5 seconds**.
+- **Sell** — first limit at the **ask**, then **−5¢ every 5 seconds**.
+- Each 5-second cycle is independent: it re-prices, re-sizes to whatever is still unfilled, and cancels the previous rung. A rejection or error in one cycle simply feeds the next.
+- The step widens to one tick on coarse-tick contracts (e.g. SPX); sell prices never go below one tick.
+- **No automatic market orders.** The ladder runs to a sanity ceiling (~13 min) and then hands the user a button. Market orders only ever exist because a human pressed one.
+
+**Sizing** — `ORDER_BUDGET_USD ÷ (price × 100)`, rounded down. The budget is the only bound on order size.
+
+**Take-profits** — a sell limit at the signal's **first target**, `DAY`, placed once for the total quantity bought.
+
+**Morning re-arm sweep** — take-profits are DAY orders, so they expire at the close. Each weekday at **09:30 ET + `delay`** (adjustable, default 2 min 10 s) the bot walks its own positions and:
+
+| Situation | Action |
+|---|---|
+| Price **above** yesterday's target | sell the position via the ladder |
+| Price below target | re-place yesterday's limit for today |
+| A sell already resting (incl. a manual one) | skip |
+| Position no longer held | forget it |
+
+Only positions the **bot itself** opened are touched — they are tracked in a local registry. Positions the account holder opened by hand are never swept.
+
+**No live market data** — the bot places **nothing**. It reports that the signal was read correctly, says it cannot price the order, and offers a button. Nothing is cancelled either: on an exit signal without data, the existing take-profit is deliberately left resting so the position stays protected.
+
+**Transient failures** — a connection-class failure (timeout, dropped socket) is retried once after 30 seconds. Deliberate refusals (contract not found, target below entry, over budget) are never retried.
+
+---
+
+## Bot Command Reference
+
+Commands are plain text — no slash needed except `/help` and `/cancel`. Typing any command while a prompt is waiting for input leaves that prompt cleanly.
+
+### Status & monitoring
+| Command | Description |
+|---|---|
+| `status` | Instant state card — mode (live/paper), armed or halted, gateway, account, **size** and **delay** settings |
+| `details` | Account summary from the broker (net liq, available funds, cash, position count) **+ live order-book check** |
+| `open positions` | List of open option positions (display only) |
+| `pending orders` | List of working orders, manual ones flagged (display only) |
+
+### Settings
+| Command | Description |
+|---|---|
+| `size` | Set the dollars spent per signal — reply with an amount, e.g. `5000` |
+| `delay` | Set how long after the 09:30 ET open the position re-check runs — reply with `130` or `2:10` |
+
+### Session control
+| Command | Description |
+|---|---|
+| `wake up` | Start the gateway, clear the halt, reclaim market data, then show the account card + order-book status + settings |
+| `sleep` | 🛑 Kill switch — halt all trading and stop the gateway |
+| `login` | Choose paper/live and open a one-time web form for credentials (and optional account ID) |
+| `logout` | Graceful IBKR logout (clean session close) |
+| `/help` | Command list |
+| `/cancel` | Leave the current prompt |
+
+> The gateway **auto-wakes** when a command needs it — no need to wake it manually first.
+> There is **no manual order entry**. Trading happens only from channel signals; the bot's own buttons are the only manual actions.
+
+---
+
+## Buttons the Bot Offers
+
+The bot never asks for confirmation before trading, but it does offer recovery actions on its notifications:
+
+| Button | Appears when | Effect |
+|---|---|---|
+| **Place at MARKET ⚡** | an entry could not be priced or the ladder ended with a remainder | buys exactly what is missing at market, with the take-profit re-attached for the whole position |
+| **Switch to MARKET ⚡** | an exit or sweep sell is unfilled or could not run | sells what is actually held at market (position-checked, so it can never double-sell) |
+| **Snooze 15 min / 12 h** | any guard alert | pauses the alert; the 1-minute drumbeat resumes afterwards until the cause is resolved |
+
+Buttons are single-use and expire on bot restart rather than acting on stale context.
+
+---
+
+## Automatic Monitoring
+
+**Guard** — checks every minute, weekdays only (weekends are silent), and alerts once per minute until resolved:
+
+| Condition | First alert |
+|---|---|
+| Bot asleep | 5 minutes into sleep |
+| Awake but **no live market data** (competing session or no subscription) | immediately |
+| Awake but **gateway down** (crash or failed wake-up) | after a ~3-minute grace, so normal re-logins don't false-alarm |
+
+Each alert carries snooze buttons; when the cause clears, a single ✅ all-clear is sent and the episode resets. Alert state is persisted, so a bot restart neither re-fires nor forgets a snooze.
+
+**Pre-market check** — every weekday at **09:00 ET** (30 minutes before the open): if the bot is up, it sends account status and the live order-book status; if it's asleep, it sends a reminder to `wake up`.
 
 ---
 
 ## Architecture
 
 ```
-Telegram  ──►  python-telegram-bot (PTB)  ──►  handlers  ──►  ibkr/client.py  ──►  IB Gateway
-                       ▲                                              (ib_insync, thread-isolated)
-                       │
-Signal channel  ──►  Telethon listener (daemon thread)  ──►  OCR  ──►  parsed order  ──►  PTB
+Telegram commands ─► python-telegram-bot ─► handlers ─► ibkr/client.py ─► IB Gateway
+                                                ▲          (ib_insync, thread-isolated)
+Signal channel ─► Telethon listener ─► prefilter ─► classify() ─► Claude reader ─┘
+                  (daemon thread)        (code)      (code)        (card only)
 ```
 
-- **PTB** runs the main event loop and all command/conversation handlers.
-- **ib_insync** talks to IB Gateway. Every IBKR call runs in its own short-lived thread with its own event loop, so blocking IBKR calls never stall PTB.
-- **Telethon** runs in a **separate daemon thread** with an isolated event loop. Work that touches PTB (sending messages, reading `user_data`) is marshalled back onto the PTB loop with `run_coroutine_threadsafe`.
+- **PTB** runs the main event loop, all commands, the guard, the pre-market check and the morning sweep.
+- **ib_insync** talks to IB Gateway. Every IBKR call runs in its own short-lived thread with its own event loop, so blocking broker calls never stall PTB. All order-owning calls are serialised behind one re-entrant lock and share one clientId.
+- **Telethon** runs in a **separate daemon thread** with an isolated event loop — PTB cancelling its tasks can't kill it (an early bug: `CancelledError` is a `BaseException`, so a `try/except Exception` reconnect loop never caught it and signals were silently missed). Cross-thread work is marshalled back with `run_coroutine_threadsafe`.
 
-> **Python event-loop note:** `bot.py` must call `asyncio.set_event_loop(asyncio.new_event_loop())` as its *first* statements, before any import — `eventkit` (an `ib_insync` dependency) calls `get_event_loop()` at import time and newer Python versions no longer auto-create one.
+> **Python event-loop note:** `bot.py` must call `asyncio.set_event_loop(asyncio.new_event_loop())` as its *first* statement, before any import — `eventkit` (an `ib_insync` dependency) calls `get_event_loop()` at import time and newer Python versions no longer auto-create one.
 
 ---
 
@@ -97,22 +186,20 @@ Signal channel  ──►  Telethon listener (daemon thread)  ──►  OCR  �
 - **Python 3.11+**
 - **IB Gateway** (paper or live), reachable on a local socket port
 - A **Telegram bot token** from [@BotFather](https://t.me/BotFather)
-- **Telegram API credentials** (`api_id` / `api_hash`) from [my.telegram.org](https://my.telegram.org) — only needed for the signal listener
-- **Tesseract OCR** installed locally *(fallback OCR)* — optional if you use Google Vision
-- A **Google Cloud Vision API key** *(preferred OCR)* — optional
-
-Install Python dependencies:
+- **Telegram API credentials** (`api_id` / `api_hash`) from [my.telegram.org](https://my.telegram.org) — for the channel listener
+- An **Anthropic API key** — the model reads the signal cards (~$0.003 per signal)
+- A **live market-data subscription** on the IBKR user the bot logs in with (US equities + OPRA options). Without it the bot can price nothing and every signal becomes a button.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-`requirements.txt`:
 ```
 python-telegram-bot==21.11.1
 python-dotenv==1.0.1
 ib_insync==0.9.86
 telethon==1.43.2
+anthropic==0.89.0
 ```
 
 ---
@@ -124,243 +211,129 @@ Copy `.env.example` to `.env` and fill in your own values. **Never commit `.env`
 | Variable | Required | Description |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | Bot token from BotFather |
-| `AUTHORIZED_USER_IDS` | yes | Comma-separated Telegram user IDs allowed to use the bot |
+| `AUTHORIZED_USER_IDS` | yes | Comma-separated Telegram user IDs allowed to use the bot (also the notification recipients) |
 | `IBKR_HOST` | yes | Usually `127.0.0.1` |
-| `IBKR_PORT` | yes | `4002` = Gateway paper, `4001` = Gateway live (`7497`/`7496` for TWS) |
+| `IBKR_PORT` | yes | `4002` = Gateway paper, `4001` = Gateway live |
 | `IBKR_CLIENT_ID` | yes | Base client ID (the bot derives others from it) |
-| `TELEGRAM_API_ID` | listener only | Telegram `api_id` from my.telegram.org |
-| `API_HASH` | listener only | Telegram `api_hash` |
-| `SIGNAL_CHANNEL` | listener only | Numeric ID of the channel to watch (e.g. `-100…`) |
-| `GOOGLE_VISION_API_KEY` | optional | Enables Google Vision OCR; falls back to Tesseract if unset |
+| `IBKR_ACCOUNT` | multi-account logins | Sub-account to trade, e.g. `U1234567`. Set from the login page. **Required when a login holds more than one account** — otherwise IBKR routes to its own default account |
+| `CLAUDE_API_KEY` | yes | Anthropic API key for the card reader |
+| `CLAUDE_MODEL` | optional | Default `claude-haiku-4-5` |
+| `TELEGRAM_API_ID` | listener | Telegram `api_id` |
+| `API_HASH` | listener | Telegram `api_hash` |
+| `SIGNAL_CHANNEL` | listener | Numeric ID of the channel to watch (`-100…`) |
+| `AUTOMATED_BOT` | yes | `true` — the Claude signal pipeline |
+| `SIGNAL_LISTENER` | yes | `false` — the legacy OCR pipeline (exactly one pipeline may be enabled) |
+| `ORDER_BUDGET_USD` | yes | Dollars per signal (also set from Telegram with `size`) |
+| `SWEEP_DELAY_SECONDS` | optional | Seconds after the open for the position re-check (also set with `delay`, default `130`) |
+| `DATA_PRIORITY` | optional | `true` lets the background watchdog reclaim market data from another session. Default `false` — only an explicit `wake up` reclaims |
 | `LOGIN_PORT` | optional | Port for the web login form (default `7823`) |
+| `VPS_IP` | optional | Host shown in the login link |
 
-> All IBKR connection vars are read **at call time**, not at import — so the web-login flow can switch paper↔live (port `4002`↔`4001`) without restarting the bot.
+> All IBKR connection variables are read **at call time**, so the login flow can switch paper↔live without restarting the bot.
 
 ---
 
 ## Setup
 
 1. **Install dependencies** — `pip install -r requirements.txt`.
-
 2. **Create `.env`** — copy `.env.example` and fill in your values.
-
-3. **Configure IB Gateway:**
-   - Configure → Settings → API → Settings
-   - Enable *ActiveX and Socket Clients*
-   - **Uncheck Read-Only API**
-   - Set the socket port to match `IBKR_PORT`
-
-4. **First-run authentication for the signal listener** (one time):
-   The first time Telethon connects it will prompt for your phone number and a login code. After that, the session is stored in `listener.session` and no re-login is needed. **Do not delete `listener.session`** or you'll have to re-authenticate.
-
-5. **Run the bot:**
-   ```bash
-   python bot.py
-   ```
-
----
-
-## Bot Command Reference
-
-### Orders
-| Command | Description |
-|---|---|
-| `buy` / `sell` | Start the step-by-step order flow |
-| `buy tsla c500 0106 1.8 2` | One-liner: buy 2× TSLA 500 Call exp Jun 1 at $1.80 limit |
-| `buy tsla c500 0106 mkt 2` | One-liner: market order (buy fills at bid, sell at mid) |
-
-### Account
-| Command | Description |
-|---|---|
-| `details` | Account summary — net liq, available funds, cash, open-position count |
-| `open positions` | List option positions; tap one to close (partial / full / %) |
-| `pending orders` | List working orders; tap one to cancel or change price |
-
-### Session
-| Command | Description |
-|---|---|
-| `login` | Choose paper/live and open a one-time web form to enter credentials |
-| `wake up` | Start the gateway (if down) and show the account summary |
-| `sleep` | Fast-kill the gateway + watchdog (leaves IBKR session to drop) |
-| `logout` | **Graceful** IBKR logout (SIGTERM, clean session close) then stop |
-| `/cancel` | Abort the current flow |
-| `/help` | Show help |
-
-### Inside flows
-| Input | Where | Meaning |
-|---|---|---|
-| `0` | Close-position prompt | Go back to the positions list |
-| `mkt` | Any price prompt | Market order (bid for buys, mid for sells) |
-| `all` / `50%` | Sell quantity | Close full / partial position |
-
-> The gateway **auto-wakes** when you start an order or account command — there's no need to wake it manually first.
-
----
-
-## Order Format
-
-```
-buy  spy  c609 0605 mkt   2      buy 2 SPY 609 Call exp Jun 5, market
-sell tsla p200 1512 3.50  1      sell 1 TSLA 200 Put exp Dec 15, limit $3.50
-sell spy  c609 0605 mkt   50%    sell 50% of current position, market
-sell spy  c609 0605 mkt   all    close full position, market
-```
-
-Pattern: `action ticker c/p+strike DDMM price qty`
-
-- **Date is `DDMM`** — `0506` = May 6. A date earlier than today rolls to next year.
-- **Price** — a number for a limit, or `mkt` for market.
-- **Quantity** — a positive integer; sells additionally accept `all` or `N%`.
-
----
-
-## Signal Listener (Telethon)
-
-The listener watches a Telegram **signal channel** and turns posted signals into confirmable orders. It is the most subtle part of the system, so it has its own design notes.
-
-### What it does
-
-1. Subscribes to `SIGNAL_CHANNEL` using a **Telethon user session** (your own Telegram account, authenticated via `TELEGRAM_API_ID` / `API_HASH`).
-2. On each new message it:
-   - **Classifies direction** from Arabic keywords in the *text* (buy vs sell keywords → `BUY` / `SELL`; anything else is ignored).
-   - **Requires an attached image** — text-only messages are skipped.
-   - **OCRs the image** to extract ticker / type / strike / expiry / entry price (see [OCR Pipeline](#ocr-pipeline)).
-   - **Builds a pending order** and DMs each authorized user an order summary with **Confirm / Cancel**.
-3. **Confirm** → the bot asks for `price quantity` (e.g. `3.50 10` or `mkt 5`), then places the order immediately.
-4. **Missing OCR fields** → the bot asks the user to supply each missing field (ticker, type, strike, expiry) one at a time, then proceeds to price + quantity.
-
-### Why it runs in a daemon thread
-
-Telethon was originally launched as an `asyncio` task on PTB's event loop. On bot restart/cleanup, PTB cancels its tasks — and **`asyncio.CancelledError` is a `BaseException`, not an `Exception`**, so a `try/except Exception` reconnect loop never caught it. The task died silently and signals were missed.
-
-The fix: `start_signal_listener()` spins up a **daemon thread** with its own event loop and runs the Telethon reconnect loop there. PTB's loop cannot cancel it. Cross-thread work (sending Telegram messages, touching `user_data`) is scheduled back onto PTB's loop with:
-
-```python
-asyncio.run_coroutine_threadsafe(coro, ptb_loop)
-```
-
-The thread is `daemon=True`, so it exits cleanly when the bot process stops — no zombies.
-
-### Session file
-
-- Telethon stores its login in `listener.session` (a SQLite file).
-- It survives restarts; deleting it forces a fresh phone-number + code login.
-- It is **git-ignored** (it contains an active session — treat it like a credential).
-
-### Getting the channel ID
-
-Private channel IDs are the numeric `-100…` form. You can obtain one from a bot like `@userinfobot`, or from the channel's invite link. Put it in `SIGNAL_CHANNEL`.
-
----
-
-## OCR Pipeline
-
-Signal images are broker position-card screenshots. Two OCR backends are supported:
-
-| Backend | When used | Notes |
-|---|---|---|
-| **Google Cloud Vision** | when `GOOGLE_VISION_API_KEY` is set | More accurate on coloured/stylised fonts; called via REST (`urllib`, no extra deps) |
-| **Tesseract (pytesseract)** | fallback when no key | Local, free; weaker on coloured text |
-
-The parser (`signal_parser.py`) handles **both text layouts** — Vision tends to emit the price on the *last* line while Tesseract puts it on the *first* — so `parse_order()` checks both and ignores a value equal to the strike.
-
-Extracted fields: `ticker`, `option_type` (C/P), `strike`, `expiry` (`YYYY-MM-DD`), `entry_price`.
-
-Test the OCR against the sample images:
-
-```bash
-python test_gvision.py --key YOUR_VISION_API_KEY
-```
+3. **Configure IB Gateway:** enable *ActiveX and Socket Clients*, **uncheck Read-Only API**, set the socket port to match `IBKR_PORT`.
+4. **First-run listener authentication** (one time): Telethon prompts for a phone number and login code, then stores `listener.session`. **Do not delete it** or you'll re-authenticate.
+5. **Run:** `python bot.py`
+6. **Arm it:** send `wake up` in Telegram.
 
 ---
 
 ## Web-Based Login
 
-Rather than typing IBKR credentials into Telegram (where they'd transit Telegram's servers), the `login` command:
+Rather than typing IBKR credentials into Telegram, the `login` command:
 
-1. Asks you to pick **Live** or **Paper**.
-2. Spins up a **temporary local HTTP server** (default port `LOGIN_PORT=7823`) protected by a random one-time token, and DMs you a link.
-3. You open the link in a browser and submit username + password **directly to the server**.
-4. The server (used once, then shut down — also auto-expires after ~2 minutes) updates the gateway config, switches the port (paper `4002` ↔ live `4001`), restarts the gateway, and replies with the account summary to confirm the login succeeded.
+1. Asks for **Live** or **Paper**.
+2. Starts a **temporary local HTTP server** (default `7823`) protected by a one-time token and sends a link.
+3. You submit username, password and — for logins holding several accounts — the **Account ID**, directly to the server.
+4. The server updates the gateway config, switches the port, restarts the gateway and replies with the account summary.
 
-Credentials therefore never pass through Telegram. The login web port must be reachable from your browser (open it in the host firewall).
+Trading stays **halted for the whole switch** and is only re-armed once the new gateway is verified up; a failed login leaves the bot safely halted. A pinned account that doesn't exist under the login is reported immediately, listing the accounts that do.
 
-> **Note:** IB Gateway / IBC store the password in plain text in their own config regardless of how it's entered — so securing host access (SSH keys, no password auth) matters more than the input channel.
+> IB Gateway / IBC store the password in plain text in their own config regardless of how it's entered — securing host access matters more than the input channel.
 
 ---
 
 ## Market Data Behaviour
 
-`get_market_data()` resolves a price for the confirmation screen in this order:
-
-1. **Portfolio price** — instant, no subscription, for contracts you already hold (gives `last`).
-2. **Live snapshot** — `reqMarketDataType(1)` + `reqMktData(snapshot=True)`.
-3. **Delayed snapshot** — `reqMarketDataType(3)` (free, 15–20 min delayed).
-4. Falls back to the portfolio `last` if nothing else is available.
-
-Key rules baked in:
-
-- **Always `snapshot=True`.** Streaming (`snapshot=False`) creates persistent server-side market-data auth locks that cause *"competing live session"* errors to accumulate.
-- **Index options (SPX/NDX) request data over the `CBOE` exchange.** Routing them through `SMART` triggers a competing-session error even when nothing else is connected. Qualification can still go through `SMART`; only the data request needs `CBOE`.
-- **Only one live market-data session per account.** If the same IBKR account is logged in elsewhere (mobile/desktop), the API gets no data until that other session is closed.
+- **One live market-data session per IBKR username.** If the same username is logged in elsewhere (mobile/desktop), the API gets no quotes — error 10197. Running the bot on a **dedicated second username** avoids fighting the account holder's own session.
+- **`wake up` always reclaims** the data share (the other session loses quotes). The background watchdog never does, unless `DATA_PRIORITY=true`.
+- **Index options (SPX/NDX) must be quoted over `CBOE`.** Routing them through `SMART` triggers competing-session errors even when nothing else is connected; qualification via `SMART` is fine.
+- **Both sides of the book are required** before the ladder starts. A one-sided or empty book counts as no data (see the no-data rule above).
+- `details` and `wake up` sample a random liquid stock and report whether live data is genuinely flowing, so subscription problems surface before the open, not during a signal.
 
 ---
 
 ## Deployment & Auto-Recovery
 
-The bot is designed to run unattended on a Linux VPS alongside IB Gateway (driven headlessly by **IBC**).
+Runs unattended on a Linux VPS alongside IB Gateway (driven headlessly by **IBC**), each component under `tmux`:
 
-**Watchdog:** a small shell loop (run under `tmux`) checks the gateway port every ~15 seconds. If the port is down it kills any stale gateway process and relaunches via IBC, then polls until the port is back. Worst-case downtime is roughly *detection (15s) + login (~60–90s)*.
+| Session | Job |
+|---|---|
+| `bot` | the bot itself |
+| `gatewaywatchdog` | restarts IB Gateway when its port goes down — capped at 5 consecutive failures, then alerts instead of retrying (repeated failed logins can lock an IBKR account) |
+| `fixwatchdog` | re-applies the read-only-API fix to every new gateway process, on either port |
 
-**IBC config essentials:**
-- `AcceptNonBrokerageAccountWarning=yes` — auto-accepts the paper-trading disclaimer.
-- `OverrideReadOnlyApi=yes` — auto-clears the Read-Only API dialog so the API is writable.
-- Credentials + `TradingMode` are rewritten by the `login` flow when you switch accounts/modes.
+**IBC config essentials:** `AcceptNonBrokerageAccountWarning=yes`, `OverrideReadOnlyApi=yes`; credentials and `TradingMode` are rewritten by the `login` flow.
 
-**clientId allocation** (derived from `IBKR_CLIENT_ID`, here shown for base `1`):
+**Live accounts require 2FA.** IBKR re-authenticates weekly (typically Sunday): the gateway login pauses on a challenge until it is approved in the IBKR Mobile app. Push approval works headlessly; SMS codes do not.
+
+**Runtime state files** (git-ignored, all survive restarts): `.trading_halted` (kill switch), `.tp_registry.json` (bot-managed take-profits), `.guard_state.json` (alert episodes), `listener.session` (Telethon).
+
+**clientId allocation** (base `IBKR_CLIENT_ID`, shown for base `1`):
 
 | clientId | Purpose |
 |---|---|
-| 1 | Place / cancel / modify orders (must own the orders it touches) |
-| 2 | Account summary |
-| 3 | Open positions |
-| 4 | Pending-orders fetch |
-| +5 | Market-data requests |
+| 1 | all order placement / cancel / modify (must own the orders it touches) |
+| +1 … +3 | position and account reads |
+| +5 | market-data requests |
+| +6 | order-book health check |
 
 ---
 
 ## IBKR Gotchas Worth Knowing
 
-These were learned the hard way; they're worth keeping in mind when extending the bot:
+Learned the hard way — worth keeping in mind when extending the bot:
 
-- **Never call `reqAllOpenOrders()` on a short-lived connection.** It *rebinds* all open orders to that connection; when the connection drops, IBKR cancels every rebound order. Cancel/modify use direct `ib.client.cancelOrder(...)` + cancel-and-replace instead.
-- **Cancel/modify must use the same clientId that placed the order** — cross-clientId order operations are silently ignored.
-- **Order rejection reasons (e.g. Error 202) arrive via `ib.errorEvent`, not the trade log.** The placer subscribes to `errorEvent`, waits a few seconds for async errors, then unsubscribes. Market-data-farm notices (2104, 2119, 2158, …) and the TIF=DAY notice (10349) are filtered out as noise.
-- **A `DDMM` date that isn't a valid trading day** (e.g. a weekend) yields no contract — that's expected, not a bug.
-- **Today's date is kept, not rolled forward** — the date parser bumps to next year only for dates strictly *before* today.
+- **Never call `reqAllOpenOrders()` on a short-lived connection that places orders.** It *rebinds* other clients' orders to that connection, and IBKR cancels them when it drops. It is safe for read-only listing (that's how manually placed orders become visible).
+- **Cancel/modify must come from the clientId that placed the order** — cross-clientId operations are silently ignored. Manual TWS orders report `orderId 0` and can be *seen* but never cancelled through the API.
+- **Rejection reasons arrive via `ib.errorEvent`, not the trade log.** Market-data-farm notices and the TIF=DAY notice (10349) are filtered as noise; error 202 is also IBKR's receipt for the bot's *own* deliberate cancels.
+- **IBKR rejects limit prices too far from the market** ("more aggressive than …"). A stale or one-sided quote can produce exactly that — which is why the ladder re-prices every cycle and no order is ever priced from a single snapshot.
+- **A quote can be silently stale.** A snapshot may return prices from many minutes earlier with no error at all — never assume one quote is the market.
+- **You cannot have orders on both sides of the same US option contract.** A repeat buy on a contract with a resting take-profit is rejected (error 201) — the bot detects this and routes the signal through the average-in flow instead.
+- **Adjusted option chains** (e.g. `2AMZN` after a corporate action) also list on `SMART` and reject API orders as "Flex options" — always qualify with `tradingClass` equal to the symbol first.
+- **TIF is never left unset.** Take-profits are `DAY` and re-armed each morning; entries and exits are `DAY` so a stale order dies at the close instead of firing into a gap.
 
 ---
 
 ## Project Structure
 
 ```
-bot.py                 entry point — wires handlers, conversations, starts the listener
+bot.py                       entry point — handlers, background loops, listener startup
 tg/
-  handlers.py          conversation states, order parsing, command handlers, login flow
-  messages.py          all message strings + formatters
-  keyboards.py         inline keyboard builders
-  callbacks.py         callback_data constants
-  signal_listener.py   Telethon daemon-thread listener
+  handlers.py                commands, login flow, guard, pre-market check, morning sweep
+  automated_listener.py      Telethon daemon-thread listener → signal execution
+  messages.py                all message strings + formatters
+  keyboards.py               inline keyboard builders
+  callbacks.py               callback_data constants
+  signal_listener.py         legacy OCR listener (disabled)
 ibkr/
-  client.py            ib_insync integration (orders, positions, market data, account)
-signal_parser.py       BUY/SELL classification + OCR (Vision/Tesseract) + field parsing
-signal_examples/       sample signal images + JSON for OCR testing
-test_connection.py     standalone: connect + qualify a contract
-test_orders.py         standalone: list open orders
-test_listener.py       standalone: channel listener that archives messages/images
-test_gvision.py        standalone: compare Google Vision vs Tesseract on samples
+  client.py                  ib_insync integration — ladder engine, entry/exit/average-in,
+                             morning sweep, take-profit registry, account pinning
+automated_bot/
+  signal_reader.py           classify() rules in code + Claude card reader
+  prefilter.py               stage-1 gate (image required)
+  config.py                  model settings
+  pipeline.py, cost_report.py, compare_models.py, check_classification.py   evaluation tools
+data_probe.py                market-data health probe used by the watchdog
+run_simulation.py            full-archive replay harness against a paper account
 requirements.txt
-.env.example           template — copy to .env and fill in
+.env.example                 template — copy to .env and fill in
 ```
 
 ---

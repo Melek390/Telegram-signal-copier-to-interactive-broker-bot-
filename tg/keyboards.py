@@ -28,6 +28,8 @@ def positions_keyboard(positions: list) -> InlineKeyboardMarkup:
 def order_list_keyboard(orders: list) -> InlineKeyboardMarkup:
     rows = []
     for i, o in enumerate(orders):
+        if o.get("manual"):
+            continue    # TWS/web orders (orderId 0) cannot be cancelled or modified from the API
         strike = int(o['strike']) if o['strike'] == int(o['strike']) else o['strike']
         label = f"Order {i+1}  —  {o['action']} {o['qty']}x {o['ticker']} {o['option_type'][0]}{strike}"
         rows.append([InlineKeyboardButton(label, callback_data=f"{cb.ORD_SELECT_PREFIX}{i}")])
@@ -65,6 +67,30 @@ def signal_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[
         InlineKeyboardButton("Confirm", callback_data=cb.SIG_CONFIRM),
         InlineKeyboardButton("Cancel",  callback_data=cb.SIG_CANCEL),
+    ]])
+
+
+def switch_to_market_keyboard(order_id: int) -> InlineKeyboardMarkup:
+    """One button under an unfilled-order notification: replace it with a market order."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Switch to MARKET ⚡",
+                             callback_data=f"{cb.M2M_PREFIX}{order_id}"),
+    ]])
+
+
+def manual_retry_keyboard(key: int) -> InlineKeyboardMarkup:
+    """One button under a failed-buy notification: try again at MARKET."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Place at MARKET ⚡",
+                             callback_data=f"{cb.RETRY_PREFIX}{key}"),
+    ]])
+
+
+def guard_snooze_keyboard() -> InlineKeyboardMarkup:
+    """Snooze options on the sleep-mode reminder."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Snooze 15 min", callback_data=f"{cb.GUARD_SNOOZE_PREFIX}900"),
+        InlineKeyboardButton("Snooze 12 h",   callback_data=f"{cb.GUARD_SNOOZE_PREFIX}43200"),
     ]])
 
 

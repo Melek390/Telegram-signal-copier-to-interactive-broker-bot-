@@ -2,3 +2,4 @@ python-telegram-bot==21.11.1
 python-dotenv==1.0.1
 ib_insync==0.9.86
 telethon==1.43.2
+anthropic==0.89.0

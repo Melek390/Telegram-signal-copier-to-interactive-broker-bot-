@@ -11,6 +11,8 @@ service-account*.json
 
 # ── Runtime state ────────────────────────────────────────────────────
 .trading_halted        # kill-switch flag written by the `sleep` command
+.tp_registry.json      # take-profits the bot itself placed (drives the morning sweep)
+.guard_state.json      # guard alert episodes / snoozes
 
 # ── Python ───────────────────────────────────────────────────────────
 __pycache__/
@@ -25,6 +27,23 @@ test_*.py
 
 # ── Downloaded signal images + metadata (may contain account data) ───
 signal_examples/
+recent_signals/
+legit_signals/
+new channel signals/
+archive_fetch.log
+# one-shot archive tooling for the private channel
+fetch_archive.py
+fetch_recent_signals.py
+sort_legit_signals.py
+scrape_tws_docs.py
+
+# ── Client-facing analysis of the signal channel (not for the public repo) ──
+Signal_Analysis_Report.pdf
+Backtest_Report*.pdf
+make_report.py
+make_backtest_report.py
+make_client_report.py
+*incident_report*.txt
 
 # ── Stray temp / debug dumps ─────────────────────────────────────────
 *.b64
@@ -42,3 +61,6 @@ C:Users*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# offline copy of the IBKR TWS API docs (2MB, third-party) - reference only
+tws_api_docs.html
